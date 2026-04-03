@@ -1,0 +1,18 @@
+{
+  "enabled": true,
+  "name": "Checkpoint Guard",
+  "description": "Enforces all checkpoints (security scan, unit tests, test coverage) before allowing write operations",
+  "version": "1",
+  "when": {
+    "type": "preToolUse",
+    "toolTypes": [
+      "write"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Check the file path being written. If the path starts with 'aidlc-docs/', '.kiro/', 'docs/', 'reports/', or 'audit/', ALLOW it immediately without any checks.\n\nOnly enforce checkpoints for writes to application source code paths: 'sample-app/', 'src/', 'services/', 'mcp-servers/'.\n\nFor application code writes, verify ALL checkpoints have passed: 1) Security scan returned no HIGH/CRITICAL issues, 2) All unit tests pass, 3) Test coverage meets threshold (WF1: 80%, WF2: 80%, WF3: 70%, WF4: 90%). If any check fails, REJECT the operation.\n"
+  },
+  "workspaceFolderName": "kiro-autonomous-ai-sdlc",
+  "shortName": "checkpoint-guard"
+}

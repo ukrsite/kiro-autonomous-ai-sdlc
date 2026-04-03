@@ -1,0 +1,36 @@
+{
+  "mcpServers": {
+    "audit-logger": {
+      "command": "docker",
+      "args": ["run", "--init", "--rm", "-i", "-e", "AUDIT_LOG_PATH", "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/audit:/audit", "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-audit-logger-mcp-server:latest"],
+      "env": {
+        "AUDIT_LOG_PATH": "/audit/audit.ndjson"
+      },
+      "disabled": false,
+      "autoApprove": ["log_interaction", "log_checkpoint", "log_event", "query_audit"]
+    },
+    "security-scanner": {
+      "command": "docker",
+      "args": ["run", "--init", "--rm", "-i", "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc:/workspace:ro", "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-security-scanner-mcp-server:latest"],
+      "env": {},
+      "disabled": false,
+      "autoApprove": ["scan_code", "scan_dependencies", "get_scan_report"]
+    },
+    "dependency-scanner": {
+      "command": "docker",
+      "args": ["run", "--init", "--rm", "-i", "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc:/workspace:ro", "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-dependency-scanner-mcp-server:latest"],
+      "env": {},
+      "disabled": false,
+      "autoApprove": ["scan_outdated", "check_compatibility", "get_upgrade_plan"]
+    },
+    "git-rollback": {
+      "command": "docker",
+      "args": ["run", "--init", "--rm", "-i", "-e", "GIT_REPO_PATH", "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc:/workspace", "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-git-rollback-mcp-server:latest"],
+      "env": {
+        "GIT_REPO_PATH": "/workspace"
+      },
+      "disabled": false,
+      "autoApprove": ["create_restore_point", "rollback", "verify_consistency", "list_restore_points"]
+    }
+  }
+}

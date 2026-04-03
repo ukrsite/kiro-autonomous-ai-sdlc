@@ -1,0 +1,576 @@
+# .gitlab-ci-workflow.yml — Jira-triggered AI workflow pipeline
+#
+# Triggered by Jira Automation via GitLab Pipeline Trigger API when an issue
+# transitions to "Ready for AI Dev". All jobs gate on $JIRA_ISSUE_KEY.
+#
+# Pipeline stages:
+#   validate           → Resolve Jira project key to service config
+#   execute-workflow   → Clone sandbox repo, run kiro-cli workflow (WF1–WF5)
+#   checkpoint-gates   → 4 parallel jobs: java-tests, python-tests, security-scan, review
+#   finalize           → Push branch, create MR, transition Jira, log audit
+#
+# The sandbox application code lives in a separate repo (kiro-sandbox.git).
+# Each job that needs it clones it into sandbox/ via SANDBOX_REPO_URL.
+#
+# Jira/GitLab/Confluence MCP servers are Docker images that cannot run via
+# stdio in K8s pods. The pipeline uses REST API directly for Jira transitions
+# and GitLab MR creation. Local MCP servers (audit-logger, security-scanner,
+# dependency-scanner, git-rollback) run via stdio.
+#
+# NOTE: workflow: block removed — parent .gitlab-ci.yml owns workflow rules.
+# All jobs here use rules to gate on $JIRA_ISSUE_KEY instead.
+
+.wf-job:
+  image: ${KIRO_CI_IMAGE}
+  tags:
+    - santi-aws-genai
+  timeout: 30 minutes
+  rules:
+    - if: '$JIRA_ISSUE_KEY'
+      when: on_success
+    - when: never
+  before_script:
+    - "export PATH=$HOME/.local/bin:$PATH"
+    - "mkdir -p $HOME/.local/share/kiro-cli"
+    - "if [ -n \"$KIRO_AUTH_DB\" ]; then echo $KIRO_AUTH_DB | base64 -d > $HOME/.local/share/kiro-cli/data.sqlite3; fi"
+    - "kiro-cli --version || echo WARN kiro-cli not found"
+    - "bash scripts/setup-kiro.sh || echo WARN setup-kiro reported issues"
+
+# Helper: clone sandbox repo.
+# Tries CI_JOB_TOKEN first (requires cross-project access enabled on sandbox repo),
+# then falls back to GITLAB_TOKEN (project/group access token with read/write_repository).
+.clone-sandbox: &clone-sandbox
+  - |
+    SANDBOX_REPO_URL=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('sandbox_repo',''))" < validate-output/project-config.json)
+    TARGET_BRANCH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['target_branch'])" < validate-output/project-config.json)
+    if [ -z "$SANDBOX_REPO_URL" ]; then
+      echo "ERROR: sandbox_repo not configured in config/jira-project-mappings.yml"; exit 1
+    fi
+    if [ ! -d "sandbox/.git" ]; then
+      CLONED=false
+      for TOKEN_VAL in "${GL_TOKEN:-}" "${GITLAB_TOKEN:-}" "${CI_JOB_TOKEN:-}"; do
+        [ -z "$TOKEN_VAL" ] && continue
+        AUTH_URL=$(echo "$SANDBOX_REPO_URL" | sed "s|https://|https://oauth2:${TOKEN_VAL}@|")
+        echo "Trying clone of $SANDBOX_REPO_URL (branch: $TARGET_BRANCH)..."
+        if git clone --branch "$TARGET_BRANCH" "$AUTH_URL" sandbox 2>/dev/null; then
+          CLONED=true; echo "Cloned on branch $TARGET_BRANCH"; break
+        elif git clone "$AUTH_URL" sandbox 2>/dev/null; then
+          CLONED=true; echo "Cloned (default branch)"; break
+        fi
+        rm -rf sandbox
+      done
+      if [ "$CLONED" != "true" ]; then
+        echo "ERROR: Failed to clone $SANDBOX_REPO_URL — check GL_TOKEN has read_repository on kiro-sandbox"
+        exit 1
+      fi
+      cd sandbox
+      git config user.email "kiro-ci@ericsson.com"
+      git config user.name "Kiro CI"
+      cd ..
+    fi
+
+# stages defined in .gitlab-ci.yml: validate, execute-workflow, checkpoint-gates, finalize
+
+# --- Stage 1: validate ---
+validate:
+  extends: .wf-job
+  stage: validate
+  script:
+    - |
+      if [ -z "$JIRA_ISSUE_KEY" ]; then
+        echo "ERROR: JIRA_ISSUE_KEY is not set"; exit 1
+      fi
+      if ! echo "$JIRA_ISSUE_KEY" | grep -qE '^[A-Z][A-Z0-9]+-[0-9]+$'; then
+        echo "ERROR: Invalid JIRA_ISSUE_KEY format: $JIRA_ISSUE_KEY"; exit 1
+      fi
+      PROJECT_KEY="${JIRA_PROJECT_KEY:-$(echo "$JIRA_ISSUE_KEY" | sed 's/-[0-9]*$//')}"
+      SERVICE_NAME="${SERVICE_NAME:-}"
+      pip install pyyaml -q
+      python3 -c "
+      import yaml, json, sys, os
+      VALID_WORKFLOWS = [
+        'wf1-requirement-to-software', 'wf2-autonomous-refactoring',
+        'wf3-dependency-upgrades', 'wf4-bug-fix', 'wf5-documentation',
+        'auto'
+      ]
+      # For 'auto', AI-DLC classifier selects WF at runtime; use WF1 threshold as safe default
+      COVERAGE_THRESHOLDS = {
+        'wf1-requirement-to-software': 80,
+        'wf2-autonomous-refactoring': 80,
+        'wf3-dependency-upgrades': 70,
+        'wf4-bug-fix': 90,
+        'wf5-documentation': None,
+        'auto': 80
+      }
+      with open('config/jira-project-mappings.yml') as f:
+          config = yaml.safe_load(f)
+      defaults = config.get('defaults', {})
+      projects = config.get('projects', {})
+      sandbox_repo = config.get('sandbox_repo', '')
+      key = '$PROJECT_KEY'
+      if key not in projects:
+          print(f'ERROR: Project key {key} not found in config'); sys.exit(1)
+      project_entry = projects[key]
+      # Resolve service: multi-service (services map) or single-service (flat)
+      if 'services' in project_entry:
+          svc_name = '$SERVICE_NAME' or project_entry.get('default_service', '')
+          services = project_entry['services']
+          if not svc_name or svc_name not in services:
+              avail = ', '.join(services.keys())
+              print(f'ERROR: SERVICE_NAME={svc_name!r} not found. Available: {avail}'); sys.exit(1)
+          svc = {**defaults, **services[svc_name]}
+      else:
+          svc = {**defaults, **project_entry}
+      if not svc.get('repo_path') or not svc.get('target_branch'):
+          print('ERROR: repo_path and target_branch are required'); sys.exit(1)
+      wf = svc.get('workflow', defaults.get('workflow', ''))
+      if wf not in VALID_WORKFLOWS:
+          print(f'ERROR: Invalid workflow: {wf}. Valid: {VALID_WORKFLOWS}'); sys.exit(1)
+      svc['workflow'] = wf
+      svc['coverage_threshold'] = COVERAGE_THRESHOLDS[wf]
+      svc['jira_issue_key'] = '$JIRA_ISSUE_KEY'
+      svc['jira_project_key'] = key
+      svc['sandbox_repo'] = sandbox_repo
+      svc['sandbox_path'] = f'sandbox/{svc[\"repo_path\"]}' if sandbox_repo else svc['repo_path']
+      os.makedirs('validate-output', exist_ok=True)
+      with open('validate-output/project-config.json', 'w') as f:
+          json.dump(svc, f, indent=2)
+      print(f'Resolved: workflow={wf}, repo={svc[\"repo_path\"]}, sandbox_path={svc[\"sandbox_path\"]}, threshold={svc[\"coverage_threshold\"]}')
+      "
+  artifacts:
+    paths:
+      - validate-output/
+    expire_in: 1 hour
+
+# --- Stage 2: execute-workflow ---
+# Issue context arrives via pipeline trigger variables (JIRA_SUMMARY, JIRA_DESCRIPTION)
+# set by Jira Automation. Falls back to REST API fetch if variables are empty.
+execute-workflow:
+  extends: .wf-job
+  stage: execute-workflow
+  needs:
+    - job: validate
+      artifacts: true
+  script:
+    - mkdir -p workflow-output
+    - *clone-sandbox
+    - |
+      CONFIG=$(cat validate-output/project-config.json)
+      export WORKFLOW=$(echo "$CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['workflow'])")
+      export SANDBOX_PATH=$(echo "$CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['sandbox_path'])")
+    # Resolve issue summary/description from trigger variables or REST API fallback
+    - |
+      export ISSUE_SUMMARY="${JIRA_SUMMARY:-}"
+      export ISSUE_DESC="${JIRA_DESCRIPTION:-}"
+      if [ -z "$ISSUE_SUMMARY" ]; then
+        echo "--- JIRA_SUMMARY not set, fetching via REST API ---"
+        JIRA_URL="${JIRA_ETEAM_URL:-https://eteamproject.internal.ericsson.com}"
+        JIRA_RESPONSE=$(curl -s -f \
+          -H "Authorization: Bearer $JIRA_ETEAM_TOKEN" \
+          -H "Content-Type: application/json" \
+          "${JIRA_URL}/rest/api/2/issue/${JIRA_ISSUE_KEY}?fields=summary,description" \
+          2>&1) || JIRA_RESPONSE="{}"
+        export ISSUE_SUMMARY=$(echo "$JIRA_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('fields',{}).get('summary','Unknown'))" 2>/dev/null || echo "Unknown")
+        export ISSUE_DESC=$(echo "$JIRA_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('fields',{}).get('description','') or '')[:2000])" 2>/dev/null || echo "")
+      fi
+      echo "Issue: $JIRA_ISSUE_KEY — $ISSUE_SUMMARY"
+      # Save for downstream jobs (finalize uses this) — write to CI root so it's accessible outside sandbox/
+      mkdir -p workflow-output
+      python3 -c "import json,os; json.dump({'summary':os.environ.get('ISSUE_SUMMARY','Unknown'),'description':os.environ.get('ISSUE_DESC','')},open('workflow-output/jira-issue.json','w'))"
+    # Create aidlc-docs directory structure inside the sandbox repo where kiro-cli will work
+    - mkdir -p sandbox/aidlc-docs/inception/requirements sandbox/aidlc-docs/inception/plans sandbox/aidlc-docs/construction workflow-output
+    - |
+      export REPO_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['repo_path'])" < validate-output/project-config.json)
+      export WORKFLOW=$(python3 -c "import sys,json; print(json.load(sys.stdin)['workflow'])" < validate-output/project-config.json)
+      python3 scripts/build_kiro_prompt.py
+      export CI_WORKFLOW_OUTPUT="$(pwd)/../workflow-output"
+      mkdir -p "$CI_WORKFLOW_OUTPUT"
+      cd sandbox
+      ../scripts/retry-wrapper.sh "kiro-cli chat --no-interactive -a @/tmp/kiro-prompt.txt"
+  artifacts:
+    paths:
+      - validate-output/
+      - workflow-output/
+      - sandbox/
+    exclude:
+      - sandbox/.git/**/*
+      - sandbox/**/__pycache__/**/*
+    expire_in: 1 hour
+
+# ---------------------------------------------------------------------------
+# Stage 3: checkpoint-gates — split into deterministic jobs
+# ---------------------------------------------------------------------------
+
+# 3a. Java build + test + coverage
+checkpoint-gates:java-tests:
+  stage: checkpoint-gates
+  image: ${JAVA_IMAGE}
+  tags:
+    - santi-aws-genai
+  timeout: 15 minutes
+  needs:
+    - job: validate
+      artifacts: true
+    - job: execute-workflow
+      artifacts: true
+  rules:
+    - if: '$JIRA_ISSUE_KEY'
+      when: on_success
+    - when: never
+  script:
+    - |
+      # Parse config using shell tools (no python3 in Maven image)
+      SANDBOX_PATH=$(grep -o '"sandbox_path"[[:space:]]*:[[:space:]]*"[^"]*"' validate-output/project-config.json | head -1 | sed 's/.*: *"//;s/"//')
+      THRESHOLD=$(grep -o '"coverage_threshold"[[:space:]]*:[[:space:]]*[0-9]*' validate-output/project-config.json | head -1 | sed 's/.*: *//')
+      echo "SANDBOX_PATH=$SANDBOX_PATH  THRESHOLD=$THRESHOLD"
+    - |
+      if [ ! -f "$SANDBOX_PATH/pom.xml" ]; then
+        echo "No pom.xml found in $SANDBOX_PATH — skipping Java tests"
+        exit 0
+      fi
+    - echo "Running mvn verify in $SANDBOX_PATH (coverage threshold ${THRESHOLD}%)"
+    - |
+      cd "$SANDBOX_PATH"
+      mvn clean verify -q 2>&1 | tail -80
+      MVN_EXIT=${PIPESTATUS[0]}
+      if [ "$MVN_EXIT" -ne 0 ]; then
+        echo "FAIL: mvn verify exited with code $MVN_EXIT"
+        exit "$MVN_EXIT"
+      fi
+    - |
+      # Extract JaCoCo coverage from CSV report using awk
+      JACOCO_CSV="target/site/jacoco/jacoco.csv"
+      if [ -f "$JACOCO_CSV" ]; then
+        awk -F',' 'NR>1 {missed+=$8; covered+=$9} END {
+          total=missed+covered;
+          pct=(total>0) ? (covered/total*100) : 0;
+          printf "Line coverage: %.1f%% (%d/%d)\n", pct, covered, total;
+          threshold='"$THRESHOLD"';
+          if (threshold>0 && pct<threshold) {
+            printf "FAIL: Coverage %.1f%% < threshold %d%%\n", pct, threshold;
+            exit 1
+          }
+          printf "PASS: Coverage %.1f%% >= threshold %d%%\n", pct, threshold
+        }' "$JACOCO_CSV"
+      else
+        echo "WARN: JaCoCo CSV report not found"
+      fi
+  artifacts:
+    paths:
+      - "**/target/surefire-reports/"
+      - "**/target/site/jacoco/"
+    reports:
+      junit: "**/target/surefire-reports/TEST-*.xml"
+    when: always
+
+# 3b. Python test + coverage
+checkpoint-gates:python-tests:
+  stage: checkpoint-gates
+  image: ${PYTHON_IMAGE}
+  tags:
+    - santi-aws-genai
+  timeout: 15 minutes
+  needs:
+    - job: validate
+      artifacts: true
+    - job: execute-workflow
+      artifacts: true
+  rules:
+    - if: '$JIRA_ISSUE_KEY'
+      when: on_success
+    - when: never
+  script:
+    - apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1
+    - pip install -q pytest pytest-cov pytest-asyncio anyio
+    - |
+      export SANDBOX_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['sandbox_path'])" < validate-output/project-config.json)
+      export THRESHOLD=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('coverage_threshold','') or '')" < validate-output/project-config.json)
+      export REPO_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['repo_path'])" < validate-output/project-config.json)
+      export TARGET_BRANCH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['target_branch'])" < validate-output/project-config.json)
+      export SANDBOX_REPO=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('sandbox_repo',''))" < validate-output/project-config.json)
+      echo "SANDBOX_PATH=$SANDBOX_PATH  THRESHOLD=$THRESHOLD  REPO_PATH=$REPO_PATH"
+    - |
+      if ! find "$SANDBOX_PATH" -name "*.py" 2>/dev/null | head -1 | grep -q .; then
+        echo "No Python files found in $SANDBOX_PATH — skipping Python tests"
+        exit 0
+      fi
+    - |
+      # Install project deps if requirements.txt exists
+      if [ -f "$SANDBOX_PATH/requirements.txt" ]; then
+        pip install -q -r "$SANDBOX_PATH/requirements.txt" || true
+      fi
+      # Also install test/dev deps if present
+      for req in "$SANDBOX_PATH/requirements-test.txt" "$SANDBOX_PATH/requirements-dev.txt"; do
+        if [ -f "$req" ]; then
+          pip install -q -r "$req" || true
+        fi
+      done
+    - |
+      # Identify changed source files by diffing kiro-cli's output against origin.
+      #
+      # The sandbox/ artifact from execute-workflow has no .git (excluded to
+      # reduce artifact size). We re-init git, fetch the target branch, stage
+      # all artifact files, and diff the index against FETCH_HEAD. This gives
+      # us the list of files kiro-cli modified.
+      #
+      # Only source files under src/ and lib/ are included (not tests), so the
+      # coverage threshold applies to production code changes only.
+      export CHANGED_SRC_FILES=""
+      if [ -n "$SANDBOX_REPO" ]; then
+        cd sandbox
+        git init -q
+        for TOKEN_NAME in CI_JOB_TOKEN GL_TOKEN GITLAB_TOKEN; do
+          TOKEN_VAL=$(eval echo "\$$TOKEN_NAME")
+          if [ -z "$TOKEN_VAL" ]; then continue; fi
+          FETCH_URL=$(echo "$SANDBOX_REPO" | sed "s|https://|https://gitlab-ci-token:${TOKEN_VAL}@|")
+          if git fetch -q "$FETCH_URL" "$TARGET_BRANCH" 2>/dev/null; then
+            echo "Fetched origin/$TARGET_BRANCH with $TOKEN_NAME"
+            break
+          fi
+        done
+        git add -A
+        # Only source files (not tests) under the service path
+        export CHANGED_SRC_FILES=$(git diff --name-only --cached FETCH_HEAD -- "$REPO_PATH/src/" "$REPO_PATH/lib/" 2>/dev/null | grep '\.py$' || true)
+        cd ..
+        if [ -n "$CHANGED_SRC_FILES" ]; then
+          echo "Changed source files:"
+          echo "$CHANGED_SRC_FILES" | sed 's/^/  /'
+        else
+          echo "No changed source files detected — will measure full coverage"
+        fi
+      fi
+    - |
+      # Run pytest with full src/ coverage, then check threshold on changed files only
+      cd "$SANDBOX_PATH"
+      if find . -name "test_*.py" -o -name "*_test.py" 2>/dev/null | head -1 | grep -q .; then
+        COV_SRC="src"
+        if [ ! -d "src" ]; then COV_SRC="."; fi
+        pytest --tb=short --junitxml=test-results.xml \
+          --cov="$COV_SRC" --cov-report=term --cov-report=xml:coverage.xml 2>&1 | tee pytest-output.txt
+        PYTEST_EXIT=${PIPESTATUS[0]}
+        if [ "$PYTEST_EXIT" -ne 0 ]; then
+          echo "FAIL: pytest exited with code $PYTEST_EXIT"
+          exit "$PYTEST_EXIT"
+        fi
+        # Check coverage threshold — on changed files if available, otherwise overall
+        if [ -n "$THRESHOLD" ] && [ "$THRESHOLD" != "None" ]; then
+          export COVERAGE_THRESHOLD="$THRESHOLD"
+          export COVERAGE_XML="coverage.xml"
+          python3 "$CI_PROJECT_DIR/scripts/validation/check_coverage.py"
+        fi
+      else
+        echo "No test files found — skipping"
+      fi
+  artifacts:
+    paths:
+      - "**/test-results.xml"
+      - "**/coverage.xml"
+    reports:
+      junit: "**/test-results.xml"
+    when: always
+
+# 3c. Security scan — runs bandit + safety on generated code
+checkpoint-gates:security-scan:
+  stage: checkpoint-gates
+  image: ${PYTHON_IMAGE}
+  tags:
+    - santi-aws-genai
+  timeout: 10 minutes
+  needs:
+    - job: validate
+      artifacts: true
+    - job: execute-workflow
+      artifacts: true
+  rules:
+    - if: '$JIRA_ISSUE_KEY'
+      when: on_success
+    - when: never
+  script:
+    - pip install -q bandit safety
+    - mkdir -p checkpoint-output
+    - |
+      SANDBOX_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['sandbox_path'])" < validate-output/project-config.json)
+    - |
+      # Scan generated code if Python files present
+      if find "$SANDBOX_PATH" -name "*.py" 2>/dev/null | head -1 | grep -q .; then
+        echo "--- Bandit scan on $SANDBOX_PATH ---"
+        bandit -r "$SANDBOX_PATH" -f json -o checkpoint-output/bandit-report.json || true
+      fi
+    - |
+      # Scan infra code (MCP servers + scripts)
+      echo "--- Bandit scan on mcp-servers/ scripts/ ---"
+      bandit -r mcp-servers/ scripts/ -f json -o checkpoint-output/bandit-infra-report.json || true
+    - |
+      # Fail on HIGH/CRITICAL findings
+      python3 -c "
+      import json, sys, glob
+      all_findings = []
+      for report_file in glob.glob('checkpoint-output/bandit-*.json'):
+          with open(report_file) as f:
+              report = json.load(f)
+          all_findings.extend(report.get('results', []))
+      high_crit = [r for r in all_findings if r.get('issue_severity') in ('HIGH', 'CRITICAL')]
+      print(f'Security scan: {len(all_findings)} total findings, {len(high_crit)} HIGH/CRITICAL')
+      if high_crit:
+          for r in high_crit:
+              print(f'  BLOCK: {r[\"filename\"]}:{r[\"line_number\"]} — {r[\"issue_text\"]}')
+          sys.exit(1)
+      print('PASS: No HIGH/CRITICAL security findings')
+      "
+    - |
+      # Dependency scan
+      echo "--- Safety check on requirements.txt ---"
+      safety check -r requirements.txt --output json > checkpoint-output/safety-report.json 2>&1 || true
+      if [ -f "$SANDBOX_PATH/requirements.txt" ]; then
+        echo "--- Safety check on $SANDBOX_PATH/requirements.txt ---"
+        safety check -r "$SANDBOX_PATH/requirements.txt" --output json > checkpoint-output/safety-sandbox-report.json 2>&1 || true
+      fi
+  artifacts:
+    paths:
+      - checkpoint-output/
+    when: always
+
+# 3d. Code review via kiro-cli (AI-assisted review + audit logging)
+checkpoint-gates:review:
+  extends: .wf-job
+  stage: checkpoint-gates
+  needs:
+    - job: validate
+      artifacts: true
+    - job: execute-workflow
+      artifacts: true
+  script:
+    - mkdir -p checkpoint-output
+    - |
+      WORKFLOW=$(python3 -c "import sys,json; print(json.load(sys.stdin)['workflow'])" < validate-output/project-config.json)
+      SANDBOX_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['sandbox_path'])" < validate-output/project-config.json)
+    - >-
+      scripts/retry-wrapper.sh
+      "kiro-cli chat --no-interactive -a
+      'You are the developer agent. Perform code review for Jira issue ${JIRA_ISSUE_KEY} (workflow: ${WORKFLOW}).
+      1. Review AI-generated code in ${SANDBOX_PATH} for correctness, conventions, and security.
+      2. Log code review result via audit-logger MCP.
+      3. Write review results to checkpoint-output/code-review.json.
+      If review finds blocking issues, exit with non-zero code.'"
+  artifacts:
+    paths:
+      - checkpoint-output/
+    expire_in: 1 hour
+
+# --- Stage 4: finalize ---
+# Commits to sandbox repo, creates MR via GitLab API, transitions Jira via REST.
+# Jira/GitLab MCP servers are not available in CI — using direct API calls.
+finalize:
+  extends: .wf-job
+  stage: finalize
+  needs:
+    - job: validate
+      artifacts: true
+    - job: execute-workflow
+      artifacts: true
+    - job: checkpoint-gates:java-tests
+      artifacts: true
+    - job: checkpoint-gates:python-tests
+      artifacts: true
+    - job: checkpoint-gates:security-scan
+      artifacts: true
+    - job: checkpoint-gates:review
+      artifacts: true
+  script:
+    - mkdir -p finalize-output
+    # The sandbox/ artifact from execute-workflow has no .git (excluded).
+    # Save it aside, clone fresh, then overlay changes.
+    - |
+      cp -r sandbox sandbox-artifact
+      rm -rf sandbox
+    - *clone-sandbox
+    - |
+      CONFIG=$(cat validate-output/project-config.json)
+      TARGET_BRANCH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['target_branch'])" <<< "$CONFIG")
+      WORKFLOW=$(python3 -c "import sys,json; print(json.load(sys.stdin)['workflow'])" <<< "$CONFIG")
+      REPO_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['repo_path'])" <<< "$CONFIG")
+      SANDBOX_REPO=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('sandbox_repo',''))" <<< "$CONFIG")
+      ISSUE_SUMMARY=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('summary',''))" < workflow-output/jira-issue.json 2>/dev/null || echo "")
+      # Fallback chain: jira-issue.json → JIRA_SUMMARY trigger var → REST API → default
+      if [ -z "$ISSUE_SUMMARY" ]; then
+        ISSUE_SUMMARY="${JIRA_SUMMARY:-}"
+      fi
+      if [ -z "$ISSUE_SUMMARY" ]; then
+        JIRA_URL="${JIRA_ETEAM_URL:-https://eteamproject.internal.ericsson.com}"
+        ISSUE_SUMMARY=$(curl -s -f \
+          -H "Authorization: Bearer $JIRA_ETEAM_TOKEN" \
+          "${JIRA_URL}/rest/api/2/issue/${JIRA_ISSUE_KEY}?fields=summary" 2>/dev/null \
+          | python3 -c "import sys,json; print(json.load(sys.stdin)['fields']['summary'])" 2>/dev/null \
+          || echo "AI-generated changes")
+      fi
+      echo "ISSUE_SUMMARY=$ISSUE_SUMMARY"
+    # Step 1: Push changes to sandbox repo
+    - |
+      export REPO_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['repo_path'])" < validate-output/project-config.json)
+      export WORKFLOW=$(python3 -c "import sys,json; print(json.load(sys.stdin)['workflow'])" < validate-output/project-config.json)
+      export ISSUE_SUMMARY
+      bash scripts/finalize_push.sh
+    # Step 2: Create MR via GitLab API
+    - |
+      echo "--- Creating merge request ---"
+      export SANDBOX_REPO_URL=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('sandbox_repo',''))" < validate-output/project-config.json)
+      export TARGET_BRANCH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['target_branch'])" < validate-output/project-config.json)
+      export WORKFLOW=$(python3 -c "import sys,json; print(json.load(sys.stdin)['workflow'])" < validate-output/project-config.json)
+      export ISSUE_SUMMARY=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('summary','AI-generated changes'))" < workflow-output/jira-issue.json 2>/dev/null || echo "AI-generated changes")
+      export GITLAB_HOST="${GITLAB_HOST:-gitlab.internal.ericsson.com}"
+      export BRANCH_NAME="ai/${JIRA_ISSUE_KEY}"
+      export MR_TITLE="feat(${JIRA_ISSUE_KEY}): ${ISSUE_SUMMARY}"
+      export MR_DESCRIPTION="Workflow: ${WORKFLOW} Pipeline: ${CI_PIPELINE_URL} Generated by Kiro CI."
+      python3 scripts/create_mr.py
+      MR_URL=$(cat /tmp/mr_url.txt 2>/dev/null || echo "")
+on-failure:
+  extends: .wf-job
+  stage: finalize
+  rules:
+    - if: '$JIRA_ISSUE_KEY'
+      when: on_failure
+    - when: never
+  needs:
+    - job: validate
+      artifacts: true
+  script:
+    - |
+      echo "--- Pipeline failed — updating Jira ---"
+      JIRA_URL="${JIRA_ETEAM_URL:-https://eteamproject.internal.ericsson.com}"
+      # Try to transition to "AI Dev Failed"
+      TRANSITIONS=$(curl -s -f \
+        -H "Authorization: Bearer $JIRA_ETEAM_TOKEN" \
+        "${JIRA_URL}/rest/api/2/issue/${JIRA_ISSUE_KEY}/transitions" 2>/dev/null || echo '{"transitions":[]}')
+      TRANSITION_ID=$(echo "$TRANSITIONS" | python3 -c "
+      import sys,json
+      data = json.load(sys.stdin)
+      for t in data.get('transitions',[]):
+          if 'fail' in t.get('name','').lower():
+              print(t['id']); break
+      else:
+          print('')
+      " 2>/dev/null || echo "")
+      if [ -n "$TRANSITION_ID" ]; then
+        curl -s -f \
+          -H "Authorization: Bearer $JIRA_ETEAM_TOKEN" \
+          -H "Content-Type: application/json" \
+          -X POST \
+          "${JIRA_URL}/rest/api/2/issue/${JIRA_ISSUE_KEY}/transitions" \
+          -d "{\"transition\":{\"id\":\"$TRANSITION_ID\"}}" 2>/dev/null || echo "WARN: Jira transition failed"
+      fi
+      # Add failure comment
+      curl -s -f \
+        -H "Authorization: Bearer $JIRA_ETEAM_TOKEN" \
+        -H "Content-Type: application/json" \
+        -X POST \
+        "${JIRA_URL}/rest/api/2/issue/${JIRA_ISSUE_KEY}/comment" \
+        -d "{\"body\":\"Kiro CI pipeline FAILED.\\n\\nPipeline: ${CI_PIPELINE_URL}\\nSee pipeline logs for details.\"}" 2>/dev/null || echo "WARN: Jira comment failed"
+    # Log failure to audit (audit-logger MCP is available via stdio)
+    - >-
+      scripts/retry-wrapper.sh
+      "kiro-cli chat --no-interactive -a
+      'Log pipeline failure to audit-logger MCP:
+      - issue_key: ${JIRA_ISSUE_KEY}
+      - pipeline: ${CI_PIPELINE_URL}
+      - status: failed'"
+  allow_failure: true

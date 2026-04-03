@@ -1,0 +1,13 @@
+{
+  "name": "Lint and Audit Log on New File",
+  "version": "1.0.0",
+  "description": "Runs lint checks and logs to audit when a new file is created",
+  "when": {
+    "type": "fileCreated",
+    "filePatterns": "**/*"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A new file was created. Run appropriate lint checks on the file based on its language (ruff for Python, eslint for JS/TS, checkstyle for Java). Log the new file creation event to the audit-logger MCP server using the log_event tool with event_type 'file_created' and include the file path in the details."
+  }
+}

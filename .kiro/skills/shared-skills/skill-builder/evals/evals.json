@@ -1,0 +1,29 @@
+{
+  "skill_name": "skill-builder",
+  "tests": [
+    {
+      "prompt": "Using skill-builder I want to create a skill that validates our Terraform modules against our cloud standards documented in Confluence. The devops team should have access to it. We've had issues where people deploy non-compliant infra and it gets caught in review — would be nice to catch it earlier.",
+      "expected": "Asks clarifying questions about which Confluence pages hold the standards, scaffolds skill directory under devops-skills or shared-skills, generates SKILL.md with proper frontmatter and workflow steps referencing Confluence MCP, creates evals/evals.json with test cases, updates devops agent resources with dual paths",
+      "result": "pass",
+      "notes": "Asked 5 clarifying questions (Confluence page location, what non-compliant looks like, output format, file vs directory scope, Terragrunt usage). After receiving answers, scaffolded skill under devops-skills/terraform-compliance with SKILL.md (proper frontmatter, Confluence MCP workflow, tag/provider/security/structure/naming checks), baseline-rules.md fallback reference, evals/evals.json with 3 test cases, and wired into devops agent with dual paths."
+    },
+    {
+      "prompt": "We've been extracting API specs from Confluence and generating TypeScript interfaces manually for the last few sprints. It's always the same steps — find the page, pull the spec table, map types. Can you turn that into a reusable skill by using skill-builder so the whole dev team can use it?",
+      "expected": "Extracts the workflow from the description (find page → pull spec → map types), creates skill with Confluence extraction and TypeScript generation steps, includes Confluence MCP in compatibility, asks about edge cases like missing fields or nested types",
+      "result": "pass",
+      "notes": "Asked 7 clarifying questions (Confluence space, table format, type mapping, nested types handling, output directory, output format details, skill location). After answers, scaffolded under developer-skills/confluence-api-to-typescript with SKILL.md (proper frontmatter, Confluence MCP compatibility, 6-step workflow covering search/extract/map/generate/write/summary), type mapping reference table, TODO pattern for referenced types, evals/evals.json with 3 test cases, and wired into developer agent with dual paths."
+    },
+    {
+      "prompt": "the radar-compliance skill isn't triggering when people ask about checking their tech stack, can you fix it by using skill-builder? they're saying things like 'is react approved' or 'check if we can use postgres 16' and nothing happens",
+      "expected": "Reads current radar-compliance SKILL.md, analyzes description field, identifies missing trigger phrases, suggests improved description with pushy pattern, tests with the exact phrases the user mentioned plus variations",
+      "result": "pass",
+      "notes": "v5.3 re-test (simulated): The updated 4-step 'Fixing Trigger Issues' workflow now explicitly guides: (1) quote current description verbatim, (2) analyze gap with concrete explanations per failing phrase, (3) propose before/after with rationale and wait for confirmation, (4) apply, bump version, create evals. The diagnostic-first structure prevents the original failure of jumping straight to rewriting. Previous failure was remediated by adding the structured workflow in v5.3."
+    },
+    {
+      "prompt": "hey I want to contribute a new skill to the repo — something that checks our Helm charts against our deployment standards. where do I start?",
+      "expected": "Recognizes skill creation request, asks clarifying questions about what the Helm chart checks should cover, scaffolds under devops-skills or shared-skills, generates SKILL.md with proper structure",
+      "result": "pass",
+      "notes": "Simulated run: Quick Start correctly identifies kiro-agents repo and maps to 'New skill' path. Phase 1 generates relevant questions (what checks, trigger phrases, output format, external tools, target agent). Phase 2 hard gate prevents premature scaffolding — asks about standards location, edge cases (subcharts, CRDs), input format, success criteria. Phase 3 scaffolds under devops-skills/helm-compliance. Phase 4-6 would produce SKILL.md with pushy description, evals, and devops agent wiring with dual paths."
+    }
+  ]
+}

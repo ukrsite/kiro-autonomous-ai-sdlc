@@ -1,0 +1,217 @@
+# CI/CD Pipeline for Autonomous AI SDLC Prototype
+# Stages: lint, test, security, deploy
+# Requirements covered: 7.1, 7.2, 7.3, 7.5, 7.6
+#
+# Lint jobs run on push/MR only (skipped when AI workflow variables are set).
+# The AI workflow pipeline is included separately and gated on $JIRA_ISSUE_KEY.
+
+variables:
+  PYTHON_IMAGE: "python:3.12-slim"
+  JAVA_IMAGE: "maven:3.9-eclipse-temurin-21"
+  NODE_IMAGE: "node:18"
+  KIRO_CI_IMAGE: "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-kiro-ci:latest"
+
+stages:
+  - lint
+  - test
+  - security
+  - validate
+  - execute-workflow
+  - checkpoint-gates
+  - finalize
+  - deploy
+
+include:
+  - local: '.gitlab-ci-workflow.yml'
+    rules:
+      - if: '$JIRA_ISSUE_KEY'
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH =~ /^renovate\/.*/
+      when: never
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_COMMIT_MESSAGE =~ /\[no ci\]/i
+      when: never
+    - when: always
+
+default:
+  tags:
+    - santi-aws-genai
+
+# ---------------------------------------------------------------------------
+# Lint — only on push/MR (skipped when AI workflow variables are set)
+# ---------------------------------------------------------------------------
+
+# Shared rules: skip lint/test/security when AI workflow is running
+.ci-rules: &ci-rules
+  rules:
+    - if: '$JIRA_ISSUE_KEY'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "web" && $WORKFLOW_NAME && $ISSUE_KEY'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "manual" && $WORKFLOW_NAME && $ISSUE_KEY'
+      when: never
+    - when: on_success
+
+lint:yaml:
+  stage: lint
+  image: $PYTHON_IMAGE
+  <<: *ci-rules
+  script:
+    - pip install -q pyyaml
+    - |
+      python3 -c "
+      import yaml, glob, sys
+      errors = 0
+      for f in glob.glob('**/*.yaml', recursive=True) + glob.glob('**/*.yml', recursive=True):
+          try:
+              yaml.safe_load(open(f))
+          except Exception as e:
+              print(f'INVALID: {f} — {e}')
+              errors += 1
+      print(f'Checked YAML files, {errors} error(s)')
+      sys.exit(1 if errors else 0)
+      "
+
+lint:python:
+  stage: lint
+  image: $PYTHON_IMAGE
+  <<: *ci-rules
+  script:
+    - pip install -q ruff mypy
+    - ruff check mcp-servers/ scripts/ src/ --config pyproject.toml
+    - |
+      for d in mcp-servers/*/; do
+        echo "--- mypy: $d ---"
+        mypy "$d" --ignore-missing-imports
+      done
+
+lint:scripts:
+  stage: lint
+  image: $PYTHON_IMAGE
+  <<: *ci-rules
+  script:
+    - pip install -q ruff
+    - ruff check scripts/ --line-length 120
+  allow_failure: true
+
+lint:skills:
+  stage: lint
+  image: $PYTHON_IMAGE
+  <<: *ci-rules
+  script:
+    - |
+      python3 -c "
+      import glob, sys
+      errors = []
+      for skill_md in glob.glob('**/SKILL.md', recursive=True):
+          content = open(skill_md).read()
+          if 'name:' not in content:
+              errors.append(f'{skill_md}: missing name field')
+          if 'description:' not in content:
+              errors.append(f'{skill_md}: missing description field')
+      for e in errors:
+          print(f'ERROR: {e}')
+      print(f'Checked skill files, {len(errors)} error(s)')
+      sys.exit(1 if errors else 0)
+      "
+
+lint:config:
+  stage: lint
+  image: $PYTHON_IMAGE
+  <<: *ci-rules
+  script:
+    - pip install -q pyyaml
+    - |
+      python3 -c "
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.validation.config_validator import load_config, validate_config
+      config = load_config('config/jira-project-mappings.yml')
+      validate_config(config)
+      print('Config validation passed')
+      "
+
+# ---------------------------------------------------------------------------
+# Test — run all module test suites
+# ---------------------------------------------------------------------------
+
+test-python:
+  stage: test
+  image: $PYTHON_IMAGE
+  <<: *ci-rules
+  script:
+    - pip install -r requirements-dev.txt mcp
+    - pytest tests/ -v --tb=short --junitxml=test-results.xml
+  artifacts:
+    reports:
+      junit: test-results.xml
+    when: always
+
+# NOTE: sample-app/ is a separate repository (not tracked in this repo).
+# Sample-app test jobs (java, nodejs, python-sample) are only useful when
+# the AI workflow checks out sample-app during execution. They are defined
+# in .gitlab-ci-workflow.yml and run as part of the checkpoint-gates stage.
+
+# ---------------------------------------------------------------------------
+# Security — scan code and dependencies
+# ---------------------------------------------------------------------------
+
+security:code:
+  stage: security
+  image: $PYTHON_IMAGE
+  <<: *ci-rules
+  script:
+    - pip install bandit
+    - bandit -r mcp-servers/ scripts/ -f json -o security-report.json || true
+    - |
+      python3 -c "
+      import json, sys
+      with open('security-report.json') as f:
+          report = json.load(f)
+      results = report.get('results', [])
+      high_crit = [r for r in results if r.get('issue_severity') in ('HIGH', 'CRITICAL')]
+      print(f'Findings: {len(results)} total, {len(high_crit)} HIGH/CRITICAL')
+      if high_crit:
+          for r in high_crit:
+              print(f'  BLOCK: {r[\"filename\"]}:{r[\"line_number\"]} — {r[\"issue_text\"]}')
+          sys.exit(1)
+      "
+  artifacts:
+    paths:
+      - security-report.json
+    when: always
+
+security:dependencies:
+  stage: security
+  image: $PYTHON_IMAGE
+  <<: *ci-rules
+  script:
+    - pip install safety
+    - safety check -r requirements.txt --output json > dependency-report.json || true
+    - safety check -r requirements-dev.txt --output json >> dependency-report.json || true
+  artifacts:
+    paths:
+      - dependency-report.json
+    when: always
+  allow_failure: true
+
+# ---------------------------------------------------------------------------
+# Deploy — sandbox only, main branch
+# ---------------------------------------------------------------------------
+
+# deploy:sandbox:
+#   stage: deploy
+#   image: $PYTHON_IMAGE
+#   rules:
+#     - if: '$CI_COMMIT_BRANCH == "main"'
+#       when: on_success
+#     - when: never
+#   script:
+#     - echo "Deploy to sandbox environment"
+#   environment:
+#     name: sandbox

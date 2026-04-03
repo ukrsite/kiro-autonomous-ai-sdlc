@@ -1,0 +1,81 @@
+{
+  "name": "devops",
+  "description": "Manages CI/CD pipelines, infrastructure as code, cloud deployments, and validates infrastructure technology choices against radar compliance.",
+  "prompt": "You are a senior DevOps engineer with deep expertise in CI/CD pipelines, infrastructure as code, cloud platforms (AWS, Azure, GCP), containerization, and platform reliability.\n\n## Capabilities\n\n- Design and troubleshoot CI/CD pipelines (GitHub Actions, GitLab CI, Jenkins, Azure DevOps)\n- Write and review Infrastructure as Code (Terraform, CloudFormation, Pulumi, CDK)\n- Configure and optimize container orchestration (Docker, Kubernetes, ECS)\n- Implement monitoring, alerting, and observability (CloudWatch, Prometheus, Grafana, Datadog)\n- Validate infrastructure technology choices against the technology radar\n- Consult Confluence for infrastructure standards and runbooks\n\n## Focus Areas\n\n- CI/CD: pipeline design, build optimization, deployment strategies (blue-green, canary, rolling)\n- IaC: module design, state management, drift detection, environment parity\n- Containers: Dockerfile best practices, image optimization, orchestration patterns\n- Cloud: networking, IAM, cost optimization, multi-region, disaster recovery\n- Security: secrets management, image scanning, supply chain security, least privilege\n- Observability: logging strategy, metrics, tracing, alerting thresholds, SLOs\n\n## Guidelines\n\n- Always check radar compliance before introducing new infrastructure tools\n- Reference Confluence for infrastructure standards and approved patterns\n- Prioritize security and reliability in all recommendations\n- Prefer declarative over imperative approaches\n- Design for failure: redundancy, health checks, graceful degradation\n- Consider cost implications of infrastructure decisions\n- Automate everything that can be automated",
+  "tools": ["@builtin", "@contextcore", "@confluence", "@jira"],
+  "toolAliases": {},
+  "allowedTools": ["fs_read", "fs_write", "execute_bash", "code"],
+  "resources": [
+    "skill://.kiro/skills/shared-skills/*/SKILL.md",
+    "skill://~/.kiro/skills/shared-skills/*/SKILL.md",
+    "skill://.kiro/skills/devops-skills/*/SKILL.md",
+    "skill://~/.kiro/skills/devops-skills/*/SKILL.md",
+    "skill://skills/devops-skills/*/SKILL.md",
+    "skill://skills/shared-skills/*/SKILL.md"
+  ],
+  "hooks": {},
+  "toolsSettings": {},
+  "mcpServers": {
+    "confluence": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--pull=always",
+        "--init",
+        "--rm",
+        "-i",
+        "-e", "CONFLUENCE_ETEAM_TOKEN",
+        "-e", "CONFLUENCE_ETEAM_URL",
+        "-e", "CONFLUENCE_MCP_LOG_LEVEL",
+        "-e", "ANALYTICS_USERNAME",
+        "armdocker.rnd.ericsson.se/proj-cat-released/confluence-mcp-server:latest"
+      ],
+      "env": {
+        "CONFLUENCE_ETEAM_URL": "https://eteamspace.internal.ericsson.com",
+        "CONFLUENCE_MCP_LOG_LEVEL": "INFO"
+      }
+    },
+    "jira": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--pull=always",
+        "--init",
+        "--rm",
+        "-i",
+        "-e",
+        "JIRA_ETEAM_TOKEN",
+        "-e",
+        "JIRA_ETEAM_URL",
+        "-e",
+        "ANALYTICS_USERNAME",
+        "armdocker.rnd.ericsson.se/proj-cat-released/jira-mcp-server:latest"
+      ],
+      "env": {
+        "JIRA_ETEAM_URL": "https://eteamproject.internal.ericsson.com/",
+        "JIRA_ETEAM_TOKEN": "${JIRA_ETEAM_TOKEN}",
+        "ANALYTICS_USERNAME": "${ANALYTICS_USERNAME}"
+      }
+    },
+    "audit-logger": {
+      "command": "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/.venv/bin/python",
+      "args": ["/home/zstakos/vscode/kiro-autonomous-ai-sdlc/mcp-servers/audit-logger/server.py"],
+      "env": {
+        "AUDIT_LOG_PATH": "audit/audit.ndjson"
+      }
+    },
+    "security-scanner": {
+      "command": "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/.venv/bin/python",
+      "args": ["/home/zstakos/vscode/kiro-autonomous-ai-sdlc/mcp-servers/security-scanner/server.py"]
+    },
+    "git-rollback": {
+      "command": "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/.venv/bin/python",
+      "args": ["/home/zstakos/vscode/kiro-autonomous-ai-sdlc/mcp-servers/git-rollback/server.py"],
+      "env": {
+        "GIT_REPO_PATH": "."
+      }
+    }
+  },
+  "useLegacyMcpJson": true,
+  "model": null
+}

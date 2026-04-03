@@ -1,0 +1,12 @@
+{
+  "name": "Manual Trigger — Autonomous Refactoring Workflow (WF2)",
+  "version": "1.0.0",
+  "description": "Manually triggers the WF2 Autonomous Refactoring workflow to refactor legacy code while preserving behavior",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the WF2 Autonomous Refactoring workflow following the wf2-autonomous-refactoring skill steps exactly: 1) Analyze legacy code to identify technical debt, code smells, and refactoring opportunities. 2) Create a restore point using git-rollback MCP create_restore_point. 3) Apply refactoring using modern patterns from references/refactoring-patterns.md. 4) Run existing tests using git-rollback MCP verify_consistency — rollback on failure. 5) Verify behavior equivalence using scripts/compare_behavior.py. 6) Run performance benchmarks using scripts/run_benchmarks.py. 7) Run security scan using security-scanner MCP scan_code. 8) Generate a delta report. 9) Log all results to audit-logger MCP. If any checkpoint fails, STOP, report failure details, and rollback using git-rollback MCP."
+  }
+}

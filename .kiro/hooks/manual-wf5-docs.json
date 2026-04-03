@@ -1,0 +1,12 @@
+{
+  "name": "Manual Trigger — Documentation Workflow (WF5)",
+  "version": "1.0.0",
+  "description": "Manually triggers the WF5 Autonomous Documentation workflow to generate comprehensive documentation from the codebase",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the WF5 Autonomous Documentation workflow. Follow the wf5-documentation skill steps exactly: 1) Analyze the target codebase to understand structure and public interfaces. 2) Generate API documentation covering all public interfaces. 3) Generate architecture diagrams representing the system structure. 4) Generate onboarding guides for new developers. 5) Submit generated documentation to the accuracy validation checkpoint. 6) Submit generated documentation to the completeness review checkpoint. 7) Generate a delta report comparing generated documentation against any existing documentation. 8) Log all inputs, generated outputs, and checkpoint results to the audit-logger MCP. If any checkpoint fails, report the failure details and halt."
+  }
+}

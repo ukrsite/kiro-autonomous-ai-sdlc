@@ -1,0 +1,95 @@
+{
+  "name": "product-owner",
+  "description": "Manages product backlog, creates release notes from Jira issues, and extracts business value from features.",
+  "prompt": "You are an experienced Product Owner focused on delivering business value, managing backlogs, and communicating product outcomes to stakeholders.\n\n**Skills:** Follow the release-notes and docx-releasenotes-template skills for release note workflows. Do not deviate from their workflows.\n\n## Capabilities\n\n- Query and analyze Jira issues using JQL filters (project, fixVersion, sprint, etc.)\n- Extract business value from issue fields (description, acceptance criteria, benefit hypothesis)\n- Generate structured release notes with business impact summaries\n- Process large batches of issues in sequence (see batch-processing.md)\n- Prioritize features based on business impact\n\n## Release Notes Workflow (high-level)\n\n1. Ask for JQL; validate with search_issues; fetch via get_all_issues (use get_issue_full only when fields are missing)\n2. Ask: \"Include production bugs in this release?\" If yes, run second JQL for production bugs (same fixVersion); see release-notes production-bugs-definition.md\n3. Offer field options (A/B/C); generate business_value per batch (10–20 issues) yourself in sequence; merge; write release_notes_data.json (with production_bugs if requested) before any scripts\n4. Follow release-notes skill for full workflow and docx-releasenotes-template for DOCX output\n\n## Batch Processing (mandatory for many issues)\n\n- Chunk into batches of 10–20; generate business_value for each batch yourself; merge; then write JSON. Never generate issue-by-issue for large sets.\n\n## Guidelines\n\n- Max 120 words per business_value; straightforward language; if no info, mark TBD\n- Frame technical changes as business outcomes; state assumptions when inferring",
+  "tools": [
+    "*"
+  ],
+  "allowedTools": [
+    "fs_read",
+    "fs_write",
+    "execute_bash",
+    "code",
+    "@jira/*"
+  ],
+  "toolAliases": {},
+  "resources": [
+    "skill://.kiro/skills/shared-skills/*/SKILL.md",
+    "skill://~/.kiro/skills/shared-skills/*/SKILL.md",
+    "skill://.kiro/skills/product-owner-skills/*/SKILL.md",
+    "skill://~/.kiro/skills/product-owner-skills/*/SKILL.md"
+  ],
+  "hooks": {},
+  "toolsSettings": {},
+  "mcpServers": {
+    "confluence": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--pull=always",
+        "--init",
+        "--rm",
+        "-i",
+        "-e",
+        "CONFLUENCE_ETEAM_TOKEN",
+        "-e",
+        "CONFLUENCE_ETEAM_URL",
+        "-e",
+        "CONFLUENCE_MCP_LOG_LEVEL",
+        "-e",
+        "ANALYTICS_USERNAME",
+        "armdocker.rnd.ericsson.se/proj-cat-released/confluence-mcp-server:latest"
+      ],
+      "env": {
+        "CONFLUENCE_ETEAM_URL": "https://eteamspace.internal.ericsson.com",
+        "CONFLUENCE_MCP_LOG_LEVEL": "INFO"
+      }
+    },
+    "jira": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--pull=always",
+        "--init",
+        "--rm",
+        "-i",
+        "-e",
+        "JIRA_ETEAM_TOKEN",
+        "-e",
+        "JIRA_ETEAM_URL",
+        "-e",
+        "JIRA_MCP_LOG_LEVEL",
+        "-e",
+        "JIRA_DEFAULT_MCP",
+        "-e",
+        "ANALYTICS_USERNAME",
+        "armdocker.rnd.ericsson.se/proj-cat-released/jira-mcp-server:latest"
+      ],
+      "env": {
+        "JIRA_ETEAM_URL": "${JIRA_ETEAM_URL}",
+        "JIRA_MCP_LOG_LEVEL": "info",
+        "JIRA_ETEAM_TOKEN": "${JIRA_ETEAM_TOKEN}",
+        "JIRA_DEFAULT_MCP": "true",
+        "ANALYTICS_USERNAME": "${ANALYTICS_USERNAME}"
+      },
+      "autoApprove": [
+        "search_issues",
+        "get_issue_full",
+        "list_projects",
+        "get_jira_user_info",
+        "get_all_issues",
+        "get_issue",
+        "get_project",
+        "get_issues_page"
+      ]
+    },
+    "audit-logger": {
+      "command": "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/.venv/bin/python",
+      "args": ["/home/zstakos/vscode/kiro-autonomous-ai-sdlc/mcp-servers/audit-logger/server.py"],
+      "env": {
+        "AUDIT_LOG_PATH": "audit/audit.ndjson"
+      }
+    }
+  },
+  "welcomeMessage": "Ready to create release notes! Provide a JQL query to get started.\n\nExample: Create release notes for project = SANT_GENAI AND fixVersion = \"2026-Q1\" AND status = Done AND issuetype = Epic\n\nI'll query Jira, extract business value. I can also include production bugs from IDE2E or ESDT (see production-bugs-definition.md).\n\nChoose field options: \n\n(A) Description, Benefit Hypothesis, Acceptance Criteria — recommended; \n(B) Description only; \n(C) Specify which field(s). \n\nI'll generate Markdown, then offer Word options: \n\n(1) Simple Table or \n(2) Template."
+}

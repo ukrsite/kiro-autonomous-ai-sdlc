@@ -1,0 +1,98 @@
+{
+  "name": "developer",
+  "description": "Assists with coding, code reviews, debugging, and ensures technology choices align with radar compliance.",
+  "prompt": "You are a senior software developer with expertise in building reliable, maintainable, and well-tested applications following team standards and best practices.\n\n## Capabilities\n\n- Write, review, and refactor code following team conventions\n- Debug issues and suggest fixes with clear explanations\n- Validate technology choices against the approved technology radar\n- Consult Confluence for coding standards, patterns, and guidelines\n- Implement features following architectural patterns defined by the team\n\n## Development Practices\n\n- Write clean, readable code with meaningful names and comments where needed\n- Follow SOLID principles and established design patterns\n- Consider error handling, edge cases, and input validation\n- Write code that is testable and maintainable\n- Respect existing project conventions and coding standards\n\n## Code Review Checklist\n\nWhen reviewing code, evaluate:\n- Correctness and logic\n- Error handling and edge cases\n- Performance implications\n- Security considerations (input validation, injection prevention, secrets handling)\n- Readability and maintainability\n- Test coverage adequacy\n- Alignment with team standards from Confluence\n\n## Guidelines\n\n- Always check radar compliance before introducing new dependencies\n- Reference Confluence for team-specific coding standards when uncertain\n- Prefer simple, proven solutions over clever abstractions\n- Flag security concerns immediately\n- Suggest incremental improvements rather than full rewrites",
+  "tools": ["@builtin", "@contextcore", "@gitlab", "@confluence", "@jira"],
+  "toolAliases": {},
+  "allowedTools": ["fs_read", "code"],
+  "resources": [
+    "skill://.kiro/skills/shared-skills/*/SKILL.md",
+    "skill://~/.kiro/skills/shared-skills/*/SKILL.md",
+    "skill://.kiro/skills/developer-skills/*/SKILL.md",
+    "skill://~/.kiro/skills/developer-skills/*/SKILL.md",
+    "skill://skills/developer-skills/*/SKILL.md",
+    "skill://skills/shared-skills/*/SKILL.md"
+  ],
+  "hooks": {},
+  "toolsSettings": {},
+  "mcpServers": {
+    "confluence": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--pull=always",
+        "--init",
+        "--rm",
+        "-i",
+        "-e", "CONFLUENCE_ETEAM_TOKEN",
+        "-e", "CONFLUENCE_ETEAM_URL",
+        "-e", "CONFLUENCE_MCP_LOG_LEVEL",
+        "-e", "ANALYTICS_USERNAME",
+        "armdocker.rnd.ericsson.se/proj-cat-released/confluence-mcp-server:latest"
+      ],
+      "env": {
+        "CONFLUENCE_ETEAM_URL": "https://eteamspace.internal.ericsson.com",
+        "CONFLUENCE_MCP_LOG_LEVEL": "INFO"
+      }
+    },
+    "gitlab": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "GITLAB_TOKEN",
+        "-e", "GITLAB_HOST=gitlab.internal.ericsson.com",
+        "armdocker.rnd.ericsson.se/proj-cat-released/gitlab-mcp-server:latest"
+      ],
+      "env": {
+        "GITLAB_TOKEN": "${GITLAB_TOKEN}",
+        "GITLAB_HOST": "gitlab.internal.ericsson.com"
+      }
+    },
+    "jira": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--pull=always",
+        "--init",
+        "--rm",
+        "-i",
+        "-e",
+        "JIRA_ETEAM_TOKEN",
+        "-e",
+        "JIRA_ETEAM_URL",
+        "-e",
+        "ANALYTICS_USERNAME",
+        "armdocker.rnd.ericsson.se/proj-cat-released/jira-mcp-server:latest"
+      ],
+      "env": {
+        "JIRA_ETEAM_URL": "https://eteamproject.internal.ericsson.com/",
+        "JIRA_ETEAM_TOKEN": "${JIRA_ETEAM_TOKEN}",
+        "ANALYTICS_USERNAME": "${ANALYTICS_USERNAME}"
+      }
+    },
+    "audit-logger": {
+      "command": "docker",
+      "args": ["run", "--init", "--rm", "-i", "-e", "AUDIT_LOG_PATH", "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/audit:/audit", "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-audit-logger-mcp-server:latest"],
+      "env": {
+        "AUDIT_LOG_PATH": "/audit/audit.ndjson"
+      }
+    },
+    "security-scanner": {
+      "command": "docker",
+      "args": ["run", "--init", "--rm", "-i", "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc:/workspace:ro", "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-security-scanner-mcp-server:latest"]
+    },
+    "dependency-scanner": {
+      "command": "docker",
+      "args": ["run", "--init", "--rm", "-i", "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc:/workspace:ro", "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-dependency-scanner-mcp-server:latest"]
+    },
+    "git-rollback": {
+      "command": "docker",
+      "args": ["run", "--init", "--rm", "-i", "-e", "GIT_REPO_PATH", "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc:/workspace", "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-git-rollback-mcp-server:latest"],
+      "env": {
+        "GIT_REPO_PATH": "/workspace"
+      }
+    }
+  },
+  "useLegacyMcpJson": true,
+  "model": null
+}

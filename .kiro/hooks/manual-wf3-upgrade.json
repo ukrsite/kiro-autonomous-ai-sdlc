@@ -1,0 +1,12 @@
+{
+  "name": "Manual Trigger — Dependency Upgrade Workflow (WF3)",
+  "version": "1.0.0",
+  "description": "Manually triggers the WF3 Dependency Upgrade workflow to upgrade outdated third-party dependencies",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the WF3 Dependency Upgrade workflow. Follow the wf3-dependency-upgrades skill steps exactly: 1) Create a restore point using git-rollback MCP create_restore_point. 2) Scan for outdated dependencies using dependency-scanner MCP scan_outdated. 3) Check compatibility for each outdated dependency using dependency-scanner MCP check_compatibility. 4) Generate code updates to resolve any breaking changes. 5) Run the full automated test suite against updated dependencies. 6) Generate a delta report listing each upgraded dependency, version changes, breaking changes, code modifications, and test results. 7) Log all results to audit-logger MCP. If tests fail after upgrades, halt and report failures. Provide rollback capability via git-rollback MCP."
+  }
+}

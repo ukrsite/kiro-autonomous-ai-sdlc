@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Manual Trigger — WF2 Refactoring",
+  "description": "Manually triggers the WF2 Autonomous Refactoring workflow to refactor legacy code while preserving behavior",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the WF2 Autonomous Refactoring workflow following the wf2-autonomous-refactoring skill: analyze legacy code, create restore point, apply refactoring, run tests, verify behavior equivalence, benchmark performance, security scan, generate delta report, log to audit. Rollback on any checkpoint failure."
+  }
+}

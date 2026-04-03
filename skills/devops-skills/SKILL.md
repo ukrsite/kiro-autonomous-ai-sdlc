@@ -1,0 +1,13 @@
+---
+name: devops-skills
+description: DevOps skills for IaC, CI/CD, and infrastructure code review workflows.
+metadata:
+  author: sdlc-prototype-team
+  version: "0.1.0"
+---
+
+## Example
+### TO DO: 
+
+1) Add IaC, CI/CD, Code Review **SKILLS** (detailed instructions will be stored in **reference/**)
+2) Add scripts (skills) that can go trough every Terraform/Terragrunt directory that has changes and run **tofu fmt** / **terragrunt hclfmt** (scripts will be stored in **scripts/**)

@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Manual Trigger — WF4 Bug Fix",
+  "description": "Manually triggers the WF4 Autonomous Bug Fix workflow to investigate and fix bugs with regression tests",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the WF4 Bug Fix workflow following the wf4-bug-fix skill: root cause analysis, generate fix, generate regression tests, side-effect analysis, fix validation checkpoint, log to audit. Create restore point before applying fix."
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "Checkpoint Guard — Block Commit Without Passing Checks",
+  "version": "2.0.0",
+  "disabled": true,
+  "description": "Enforces all checkpoints (security scan, unit tests, test coverage) before allowing git commit, push, or merge operations. Does NOT block normal file edits. Validates requirements 4.2, 4.3, 4.4, 4.5.",
+  "when": {
+    "type": "preToolUse",
+    "toolTypes": "shell"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Check if this shell command is a git commit, git push, git merge, or merge request operation. If it is NOT a git commit/push/merge operation, ALLOW it immediately without further checks.\n\nIf it IS a git commit, push, or merge operation, verify ALL of the following checkpoints have passed before allowing it. If ANY check has not been run or has failed, REJECT this operation and explain why.\n\n1) SECURITY SCAN: Verify that the security-scanner MCP scan_code tool has been run on all modified files and returned NO HIGH or CRITICAL severity issues. If the scan has not been run, run it now before proceeding.\n\n2) UNIT TESTS: Verify that all unit tests pass. Run the test suite if results are not available. Any test failure means this operation must be REJECTED.\n\n3) TEST COVERAGE: Verify that test coverage meets the minimum threshold for the active workflow (WF1: 80%, WF2: 80%, WF3: 70%, WF4: 90%). If coverage data is not available, REJECT the operation.\n\nIf all three checks pass, allow the operation and log the successful checkpoint result to the audit-logger MCP using log_checkpoint with passed=true. If any check fails, log the failure to the audit-logger MCP using log_checkpoint with passed=false and include which checks failed in validation_details."
+  }
+}

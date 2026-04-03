@@ -1,0 +1,12 @@
+{
+  "name": "Manual Trigger — Bug Fix Workflow (WF4)",
+  "version": "1.0.0",
+  "description": "Manually triggers the WF4 Autonomous Bug Fix workflow to investigate and fix bugs with regression tests",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the WF4 Autonomous Bug Fix workflow. Follow the wf4-bug-fix skill steps exactly: 1) Perform root cause analysis on the reported bug or failing test to identify the source of the defect. 2) Generate a code fix addressing the identified root cause. 3) Generate regression tests that verify the fix and prevent recurrence. 4) Perform side-effect analysis to verify the fix does not introduce new defects. 5) Run the fix validation checkpoint — if it fails, report the failure and halt. 6) Log all inputs, generated outputs, and checkpoint results to the audit-logger MCP. Create a restore point before applying the fix using git-rollback MCP create_restore_point."
+  }
+}

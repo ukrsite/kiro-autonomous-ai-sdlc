@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "name": "Security Scan on Code Change",
+  "description": "Triggers a security scan via security-scanner MCP whenever source code files are edited",
+  "version": "1",
+  "when": {
+    "type": "postTaskExecution"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A source code file was edited. Run a security scan on the modified file using the security-scanner MCP server's scan_code tool. Report any HIGH or CRITICAL vulnerabilities found. Log the scan results to the audit-logger MCP server using the log_event tool with event_type 'security_scan_triggered'."
+  },
+  "workspaceFolderName": "kiro-agents",
+  "shortName": "on-code-change"
+}

@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Manual Trigger — WF3 Dependency Upgrade",
+  "description": "Manually triggers the WF3 Dependency Upgrade workflow to upgrade outdated third-party dependencies",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the WF3 Dependency Upgrade workflow following the wf3-dependency-upgrades skill: create restore point, scan outdated deps, check compatibility, generate code updates, run full test suite, generate delta report, log to audit. Rollback on failure."
+  }
+}

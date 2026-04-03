@@ -1,0 +1,39 @@
+# Project Mapping Configuration
+# Maps Jira project keys to service paths within the kiro-sandbox repository.
+#
+# The sandbox repo is cloned into $CI_PROJECT_DIR/sandbox/ during pipeline execution.
+# repo_path values are relative to the sandbox repo root.
+#
+# When a Jira project has multiple services, set the CI variable SERVICE_NAME
+# when triggering the pipeline (e.g. SERVICE_NAME=java-api). The pipeline
+# looks up the matching entry under the project's "services" map.
+# If SERVICE_NAME is not set, the "default_service" is used.
+#
+# Schema:
+#   defaults: Global default values applied to any project entry that omits optional fields.
+#   projects: Map of Jira project keys to repository and workflow configuration.
+#     Each project can define either:
+#       - A single service (flat: repo_path + target_branch), or
+#       - Multiple services (services map + default_service).
+
+sandbox_repo: https://gitlab.internal.ericsson.com/san-tools-technology-platform/genai-innovation/ai-streams/developer/kiro-sandbox.git
+
+defaults:
+  workflow: auto  # AI-DLC Request Type Classifier selects WF at runtime; wf1 used as fallback
+  agent: developer
+  trigger_status: "Ready for AI Dev"
+  timeout_minutes: 30
+
+projects:
+  QWE:
+    default_service: java-api
+    services:
+      java-api:
+        repo_path: services/java-api
+        target_branch: main
+      node-gateway:
+        repo_path: services/node-gateway
+        target_branch: main
+      python-processor:
+        repo_path: services/python-processor
+        target_branch: main

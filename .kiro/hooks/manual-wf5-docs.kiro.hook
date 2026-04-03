@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "Manual Trigger — WF5 Documentation",
+  "description": "Manually triggers the WF5 Documentation workflow to generate comprehensive documentation from the codebase",
+  "version": "1",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Execute the WF5 Documentation workflow following the wf5-documentation skill: analyze codebase, generate API docs, architecture diagrams, onboarding guides, accuracy validation, completeness review, generate delta report, log to audit. Halt on checkpoint failure."
+  }
+}
