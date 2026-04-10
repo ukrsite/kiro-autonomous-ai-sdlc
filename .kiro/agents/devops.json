@@ -56,24 +56,6 @@
         "JIRA_ETEAM_TOKEN": "${JIRA_ETEAM_TOKEN}",
         "ANALYTICS_USERNAME": "${ANALYTICS_USERNAME}"
       }
-    },
-    "audit-logger": {
-      "command": "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/.venv/bin/python",
-      "args": ["/home/zstakos/vscode/kiro-autonomous-ai-sdlc/mcp-servers/audit-logger/server.py"],
-      "env": {
-        "AUDIT_LOG_PATH": "audit/audit.ndjson"
-      }
-    },
-    "security-scanner": {
-      "command": "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/.venv/bin/python",
-      "args": ["/home/zstakos/vscode/kiro-autonomous-ai-sdlc/mcp-servers/security-scanner/server.py"]
-    },
-    "git-rollback": {
-      "command": "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/.venv/bin/python",
-      "args": ["/home/zstakos/vscode/kiro-autonomous-ai-sdlc/mcp-servers/git-rollback/server.py"],
-      "env": {
-        "GIT_REPO_PATH": "."
-      }
     }
   },
   "useLegacyMcpJson": true,

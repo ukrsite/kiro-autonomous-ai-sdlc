@@ -446,11 +446,118 @@ The migration eliminated the custom engine entirely. All workflow logic lives in
 |---|---|---|---|
 | 1 | Jira "In Review" transition not found (no matching status) | Low | Open — depends on Jira workflow config |
 | 2 | `sandbox/workflow-output/` artifact path warning | Low | Resolved — removed stale path |
-| 3 | kiro-cli MCP server duplicate warnings in CI | Low | Cosmetic — agent config and mcp.json both define servers |
+| 3 | kiro-cli MCP server duplicate warnings in CI | Low | ✅ Resolved — removed duplicate MCP servers from agent configs; now defined only in `.kiro/settings/mcp.json` |
 | 4 | kiro-cli authenticated with personal user account | Medium | Open — service account needed for stable CI testing; personal token will expire and is not auditable as a CI identity |
 
 ---
 
-## 10. Conclusion
+## 10. Week 4 Updates (2026-04-09)
 
-Week 3 completed the migration from the custom AgentCore engine to Kiro-native primitives with AI-DLC integration. The system now operates as a zero-custom-engine architecture: Jira triggers a GitLab pipeline that runs `kiro-cli` against the sandbox repository, producing tested code with a merge request. The full lifecycle — INCEPTION (requirements, planning) through CONSTRUCTION (code generation, testing, documentation) — executes autonomously in CI with checkpoint gates for quality assurance. All five workflows (WF1-WF5) share consistent rules from `.kiro/aws-aidlc-rule-details/` for error handling, security enforcement, and code generation standards.
+The following improvements were delivered after the initial Week 3 report:
+
+### 10.1 New Deliverables
+
+| # | Deliverable | Status | Evidence |
+|---|---|---|---|
+| 11 | FinOps Cost Estimator MCP Server | ✅ DELIVERED | `mcp-servers/finops-cost-estimator/server.py`, 5 cost dimensions |
+| 12 | Node.js Checkpoint Gate | ✅ DELIVERED | `checkpoint-gates:node-tests` — `npm test` + Jest coverage |
+| 13 | Multi-Service Mode (`all-services`) | ✅ DELIVERED | `SERVICE_NAME=all-services` inspects all 3 services in one run |
+| 14 | WF1 Summary Report | ✅ DELIVERED | `docs/wf1-summary-{ISSUE_KEY}.md` generated per service |
+| 15 | LLM Token Cost Extraction | ✅ DELIVERED | `scripts/extract_token_usage.py` + compute-time estimation fallback |
+| 16 | Rate-Limit Aware Retry | ✅ DELIVERED | `retry-wrapper.sh` — 5 retries, 60s cooldown on rate limit |
+| 17 | Mandatory WF1 Documentation | ✅ DELIVERED | 5 doc artifacts per service (release notes, CHANGELOG, OpenAPI, architecture, summary) |
+| 18 | Sandbox Local Run + CI Deploy Docs | ✅ DELIVERED | README Step 5, `docker compose up --build`, CI deploy pipeline |
+
+### 10.2 Pipeline Updates
+
+| Change | Detail |
+|---|---|
+| `checkpoint-gates:node-tests` added | `npm test` + Jest coverage, skips if no `package.json` |
+| `python-tests` multi-service aware | Iterates per Python service when `all-services` selected |
+| `KIRO_LOG_LEVEL=trace` in CI | Enables token count extraction from kiro-cli logs |
+| `extract_token_usage.py` post-kiro-cli | Injects LLM token counts into audit NDJSON before cost calculation |
+| `audit/` added to pipeline artifacts | Token data persists across stages |
+| `retry-wrapper.sh` improved | 5 retries (was 3), rate-limit detection (60s cooldown), 300s cap |
+
+### 10.3 MCP Server Updates
+
+| Server | Change |
+|---|---|
+| `finops-cost-estimator` (NEW) | 4 tools: `estimate_workflow_cost`, `calculate_workflow_cost`, `get_cost_report`, `get_historical_baseline` |
+| Agent configs (all) | Removed duplicate MCP server definitions — now only in `mcp.json` via `setup-kiro.sh` |
+| `setup-kiro.sh` | Docker transport for local, stdio for CI; venv python detection |
+
+### 10.4 Configuration Updates
+
+| Change | Detail |
+|---|---|
+| `workflow: auto` default | AI-DLC classifier selects WF at runtime (was hardcoded `wf1`) |
+| `all-services` service entry | `repo_path: services` — inspects all 3 services in one pipeline run |
+| `finops-cost-model.yml` | Unit prices + compute-time token estimation rates (configurable) |
+| `finops-cost-reporting.md` steering | Always-on — mandates cost table in every workflow response |
+
+### 10.5 Validated E2E Runs (Week 4)
+
+| Run | Issue | Service | Result | Cost |
+|---|---|---|---|---|
+| Pipeline (QWE-11) | QWE-11 | python-processor | ✅ Config endpoints + 26 tests, 100% coverage | $0.03 |
+| Pipeline (QWE-12) | QWE-12 | all-services | ✅ Config endpoints across 3 services, 34 tests | $0.34 |
+
+### 10.6 Known Issues Updated
+
+| # | Issue | Severity | Status |
+|---|---|---|---|
+| 1 | Jira "In Review" transition not found | Low | Open — depends on Jira workflow config |
+| 4 | Personal kiro-cli token in CI | Medium | Open — service account needed |
+| 5 | Docker MCP images stale after code changes | Medium | Open — must rebuild locally after server.py changes |
+| 6 | LLM token counts are estimated, not exact | Low | Mitigated — compute-time estimation (~40 tok/s) used when kiro-cli log unavailable |
+
+### 10.8 Sandbox CI/CD — Container and Helm Delivery to AWS
+
+Each service in `kiro-sandbox` has its own `.gitlab-ci.yml` that triggers automatically when files in its directory change on push. The pipeline delivers container images and Helm charts to AWS ECR, with deployment to EKS via GitOps.
+
+**Pipeline stages (per service):**
+
+| Stage | Job | Description |
+|---|---|---|
+| version | `version` | `main`: semantic-release computes next semver (e.g. `1.0.3`). Other branches: `{base-version}-{commit-hash}` (e.g. `1.0.2-7a1946f1`) |
+| build | `build container` | Kaniko builds the container image and pushes to Artifactory |
+| publish | `publish container ECR` | Copies the image from Artifactory to AWS ECR with the release version tag |
+| publish | `create helm chart` | Packages the Helm chart with the release version and pushes to the Helm repo |
+| publish | `helm publish ECR` | Pushes the Helm chart to the ECR-based OCI Helm registry |
+| release | `release` | On `main`: semantic-release creates a Git tag, updates `CHANGELOG.md` and `.version`, publishes a GitLab release |
+
+**GitOps deployment flow:**
+
+```
+merge to main → semantic-release (v1.0.3)
+  → Kaniko build → Artifactory
+  → publish to ECR (container + Helm chart)
+  → ArgoCD / Flux detects new chart version in ECR
+  → deploys to AWS EKS cluster
+```
+
+| Component | Registry | Path |
+|---|---|---|
+| Container image | AWS ECR | `905418281081.dkr.ecr.us-east-1.amazonaws.com/python-processor:1.0.3` |
+| Helm chart | AWS ECR (OCI) | `905418281081.dkr.ecr.us-east-1.amazonaws.com/helm/python-processor:1.0.3` |
+
+**Branch strategy:**
+- `main` → production release (semver tag, GitLab release, ECR push)
+- Any other branch → pre-release build (`{version}-{hash}`, ECR push, no Git tag)
+
+No manual steps needed. The same pattern applies to all three services (`java-api`, `python-processor`, `node-gateway`).
+
+### 10.9 Live Deployment — Python Processor
+
+The python-processor service is deployed to AWS EKS via the CI pipeline described above. The FastAPI Swagger UI is accessible at:
+
+> **URL:** [https://test.genai-innovation.ericsson.net/python-processor/docs](https://test.genai-innovation.ericsson.net/python-processor/docs)
+
+This is the live instance of the AI-generated code — endpoints like `GET /api/config`, `PUT /api/config/log-level`, `POST /api/process/users`, and `POST /api/reports/generate` are all reachable and documented via the interactive Swagger UI. Each merge to `main` in kiro-sandbox triggers the CI pipeline, which builds a new container image, pushes it to ECR, and the GitOps workflow deploys it to EKS automatically.
+
+---
+
+## 11. Conclusion
+
+Week 3 completed the migration from the custom AgentCore engine to Kiro-native primitives with AI-DLC integration. Week 4 extended the system with FinOps cost tracking, multi-service support (`all-services`), Node.js checkpoint gates, mandatory WF1 documentation artifacts, and rate-limit-aware retry logic. The system now operates as a zero-custom-engine architecture with 5 MCP servers, 5 checkpoint gates (Java, Python, Node, security, review), and per-run cost reporting across 5 dimensions. End-to-end validated with multi-service runs producing tested code, documentation, and cost reports across all three sandbox services.

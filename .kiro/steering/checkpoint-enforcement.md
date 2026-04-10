@@ -1,7 +1,3 @@
----
-inclusion: manual
----
-
 # Checkpoint Enforcement
 
 ## Checkpoint Pipeline

@@ -1,8 +1,8 @@
 # E2E Workflow Descriptions
 
 **Project:** Autonomous AI SDLC Prototype
-**Version:** 1.0
-**Last Updated:** 2026-03-29
+**Version:** 2.0
+**Last Updated:** 2026-04-09
 
 ---
 
@@ -26,20 +26,30 @@ Transforms a natural language requirement into merged, tested, documented code.
 - Natural language requirement or user story
 
 ### Workflow Steps
-1. Parse requirement
-2. Create Kiro spec (requirements → design → tasks)
-3. Implement tasks
-4. Code review checkpoint
-5. Test coverage checkpoint (≥80%)
-6. Security scan checkpoint
-7. Merge to target branch
-8. Log to audit
+1. Start workflow — log `workflow_start` to audit-logger MCP
+2. Parse requirement (from Handoff Artifact or raw input)
+3. Create Kiro spec (design → tasks; skip requirements if INCEPTION provided them)
+4. Create restore point (git-rollback MCP)
+5. Implement tasks — code + unit tests (≥80% coverage) + inline docs
+6. Code review checkpoint
+7. Test coverage checkpoint (≥80%)
+8. Security scan checkpoint
+9. Generate documentation — 5 mandatory artifacts per service:
+   - `docs/release-notes-{ISSUE_KEY}.md`
+   - `docs/CHANGELOG.md` (append)
+   - `docs/openapi.yaml` (if REST endpoints)
+   - `docs/architecture.md`
+   - `docs/wf1-summary-{ISSUE_KEY}.md` (summary report)
+10. Merge to target branch
+11. Log `workflow_end` to audit-logger MCP
+12. Calculate and report workflow cost (finops-cost-estimator MCP)
 
 ### Output Artifacts
 - Implemented code
 - Unit tests
 - Feature documentation
 - Audit trail
+- Cost report (`reports/finops/`)
 
 ### Checkpoints
 | Checkpoint | Tool | Pass Criteria |
@@ -77,6 +87,7 @@ Refactors legacy code while preserving behavior, reducing technical debt.
 - Performance benchmarks (before/after)
 - Delta report
 - Audit trail
+- Cost report (`reports/finops/`)
 
 ### Checkpoints
 | Checkpoint | Tool | Pass Criteria |
@@ -191,3 +202,52 @@ Generates comprehensive documentation from an existing codebase.
 |-----------|------|---------------|
 | Accuracy | validate_docs.py | Documentation matches code |
 | Completeness | completeness-criteria.md | All public interfaces documented |
+
+---
+
+## FinOps: Workflow Cost Reporting
+
+**MCP Server:** `mcp-servers/finops-cost-estimator/`
+**Config:** `config/finops-cost-model.yml`
+**Reports:** `reports/finops/`
+
+### Purpose
+Tracks the cost of every workflow run across five dimensions: LLM token usage, compute time, MCP tool calls, and checkpoint executions.
+
+### Tools
+
+| Tool | When | Description |
+|------|------|-------------|
+| `estimate_workflow_cost` | Before run | Pre-run estimate based on scope (files to modify, checkpoints) |
+| `calculate_workflow_cost` | After run | Post-run actuals computed from the audit log |
+| `get_cost_report` | On demand | Retrieve stored report as JSON or Markdown |
+| `get_historical_baseline` | On demand | p50/p95 statistics from past runs |
+
+### Cost Dimensions
+
+| Dimension | Unit Price |
+|-----------|-----------|
+| LLM Input Tokens | $0.003 / 1K tokens |
+| LLM Output Tokens | $0.015 / 1K tokens |
+| Compute Time | $0.00005 / second |
+| MCP Tool Calls | $0.0001 / call |
+| Checkpoints | $0.001 / checkpoint |
+
+Prices are defined in `config/finops-cost-model.yml` and can be updated without code changes.
+
+### Automatic Reporting
+
+The `finops-cost-reporting.md` steering file instructs the agent to call `calculate_workflow_cost` at the end of every workflow run and include a formatted cost table in its final response. Reports are also written to `reports/finops/` as `{workflow_id}_{timestamp}.json` and `.md`.
+
+### Token Estimation
+
+LLM token counts are estimated using a priority chain:
+1. kiro-cli trace log (actual API counts) — requires `KIRO_LOG_LEVEL=trace`
+2. Manual injection via `scripts/extract_token_usage.py`
+3. Compute-time estimation (duration × 40 tok/s output × 2.5 input ratio)
+
+Token estimation rates are configurable in `config/finops-cost-model.yml` under `scaling.token_estimation`.
+
+### Baseline Learning
+
+After each completed run, actuals are appended to `reports/finops/baselines.json`. Subsequent estimates use the p50 of historical runs instead of static defaults, improving accuracy over time. Confidence level is reported as `low` (<3 runs), `medium` (<10 runs), or `high` (≥10 runs).

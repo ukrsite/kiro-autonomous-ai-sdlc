@@ -1,0 +1,71 @@
+version: "1.0.0"
+
+unit_prices:
+  llm_tokens_input_per_1k_usd: 0.003
+  llm_tokens_output_per_1k_usd: 0.015
+  compute_time_per_second_usd: 0.00005
+  mcp_tool_invocation_usd: 0.0001
+  checkpoint_execution_usd: 0.001
+
+defaults:
+  wf1:
+    llm_tokens_input: 50000
+    llm_tokens_output: 20000
+    compute_time_seconds: 300
+    mcp_tool_invocations: 40
+    checkpoint_executions: 4
+  wf2:
+    llm_tokens_input: 80000
+    llm_tokens_output: 30000
+    compute_time_seconds: 600
+    mcp_tool_invocations: 60
+    checkpoint_executions: 3
+    behavior_equivalence_overhead_usd: 0.05
+  wf3:
+    llm_tokens_input: 40000
+    llm_tokens_output: 15000
+    compute_time_seconds: 240
+    mcp_tool_invocations: 50
+    checkpoint_executions: 4
+  wf4:
+    llm_tokens_input: 60000
+    llm_tokens_output: 25000
+    compute_time_seconds: 400
+    mcp_tool_invocations: 45
+    checkpoint_executions: 5
+  wf5:
+    llm_tokens_input: 30000
+    llm_tokens_output: 20000
+    compute_time_seconds: 180
+    mcp_tool_invocations: 20
+    checkpoint_executions: 2
+
+scaling:
+  # Throughput rates for compute-time-based token estimation.
+  # Used when audit log interaction records lack explicit token counts
+  # and text-based estimation produces < 500 tokens total.
+  token_estimation:
+    output_tokens_per_second: 40.0    # ~40 output tokens/sec (Claude/GPT)
+    input_output_ratio: 2.5           # input is typically 2.5x output
+    min_token_threshold: 500          # below this, switch to compute-time estimation
+
+  wf1_per_file:
+    llm_tokens_input: 5000
+    llm_tokens_output: 2000
+    compute_time_seconds: 30
+  wf2_per_file:
+    llm_tokens_input: 8000
+    llm_tokens_output: 3000
+    compute_time_seconds: 60
+  wf3_per_file:
+    llm_tokens_input: 3000
+    llm_tokens_output: 1000
+    compute_time_seconds: 20
+  wf4_per_file:
+    llm_tokens_input: 6000
+    llm_tokens_output: 2500
+    compute_time_seconds: 40
+  wf5_per_file:
+    llm_tokens_input: 4000
+    llm_tokens_output: 3000
+    compute_time_seconds: 25

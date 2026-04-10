@@ -132,6 +132,14 @@ validate:
       svc['jira_project_key'] = key
       svc['sandbox_repo'] = sandbox_repo
       svc['sandbox_path'] = f'sandbox/{svc[\"repo_path\"]}' if sandbox_repo else svc['repo_path']
+      # If all-services selected, include the list of individual service paths
+      svc_name_resolved = '$SERVICE_NAME' or project_entry.get('default_service', '')
+      if svc_name_resolved == 'all-services' and 'services' in project_entry:
+          svc['multi_service'] = True
+          svc['service_paths'] = [
+              s.get('repo_path') for name, s in project_entry['services'].items()
+              if name != 'all-services' and s.get('repo_path')
+          ]
       os.makedirs('validate-output', exist_ok=True)
       with open('validate-output/project-config.json', 'w') as f:
           json.dump(svc, f, indent=2)
@@ -152,12 +160,14 @@ execute-workflow:
     - job: validate
       artifacts: true
   script:
-    - mkdir -p workflow-output
+    - mkdir -p workflow-output audit reports/finops
     - *clone-sandbox
     - |
       CONFIG=$(cat validate-output/project-config.json)
       export WORKFLOW=$(echo "$CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['workflow'])")
       export SANDBOX_PATH=$(echo "$CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin)['sandbox_path'])")
+      export MULTI_SERVICE=$(echo "$CONFIG" | python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('multi_service') else '')")
+      export SERVICE_PATHS=$(echo "$CONFIG" | python3 -c "import sys,json; c=json.load(sys.stdin); print(','.join(c.get('service_paths',[])) if c.get('multi_service') else '')")
     # Resolve issue summary/description from trigger variables or REST API fallback
     - |
       export ISSUE_SUMMARY="${JIRA_SUMMARY:-}"
@@ -179,19 +189,68 @@ execute-workflow:
       python3 -c "import json,os; json.dump({'summary':os.environ.get('ISSUE_SUMMARY','Unknown'),'description':os.environ.get('ISSUE_DESC','')},open('workflow-output/jira-issue.json','w'))"
     # Create aidlc-docs directory structure inside the sandbox repo where kiro-cli will work
     - mkdir -p sandbox/aidlc-docs/inception/requirements sandbox/aidlc-docs/inception/plans sandbox/aidlc-docs/construction workflow-output
+    # Pre-create aidlc-state.md with silent verbosity so kiro-cli doesn't default to debug
+    # output in CI. Without this file the workflow defaults to debug mode (per verbosity-mode.md),
+    # producing verbose output that makes it hard to distinguish a stalled run from normal progress.
+    - |
+      WORKFLOW_CI=$(python3 -c "import sys,json; print(json.load(sys.stdin)['workflow'])" < validate-output/project-config.json)
+      cat > sandbox/aidlc-docs/aidlc-state.md << 'EOF'
+      ## Verbosity Mode
+      silent
+
+      ## Extension Configuration
+      Security Baseline: Enabled
+
+      ## Workflow Integration
+      Workflow: ${WORKFLOW_CI}
+      Issue: ${JIRA_ISSUE_KEY}
+      EOF
+      # Substitute shell variables that heredoc won't expand inside single-quoted EOF
+      sed -i "s|\${WORKFLOW_CI}|${WORKFLOW_CI}|g; s|\${JIRA_ISSUE_KEY}|${JIRA_ISSUE_KEY}|g" sandbox/aidlc-docs/aidlc-state.md
+      echo "Created aidlc-state.md (verbosity: silent, workflow: ${WORKFLOW_CI})"
     - |
       export REPO_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['repo_path'])" < validate-output/project-config.json)
       export WORKFLOW=$(python3 -c "import sys,json; print(json.load(sys.stdin)['workflow'])" < validate-output/project-config.json)
       python3 scripts/build_kiro_prompt.py
-      export CI_WORKFLOW_OUTPUT="$(pwd)/../workflow-output"
+      export CI_WORKFLOW_OUTPUT="$(pwd)/workflow-output"
       mkdir -p "$CI_WORKFLOW_OUTPUT"
-      cd sandbox
-      ../scripts/retry-wrapper.sh "kiro-cli chat --no-interactive -a @/tmp/kiro-prompt.txt"
+      # Enable trace logging so kiro-cli writes token counts to its log file.
+      # extract_token_usage.py reads these after the run for accurate FinOps cost.
+      export KIRO_LOG_LEVEL=trace
+      scripts/retry-wrapper.sh "kiro-cli chat --no-interactive -a @/tmp/kiro-prompt.txt"
+    # Extract LLM token usage from kiro-cli logs and inject into audit NDJSON
+    # so finops-cost-estimator can include LLM costs in the workflow cost report.
+    - |
+      WORKFLOW_ID=$(python3 -c "
+      import json
+      from pathlib import Path
+      p = Path('audit/audit.ndjson')
+      wid = ''
+      if p.exists():
+          for line in p.read_text().strip().split('\n'):
+              if not line.strip(): continue
+              try:
+                  r = json.loads(line)
+                  if r.get('type') == 'event' and r.get('payload',{}).get('event_type') == 'workflow_start':
+                      wid = r.get('workflow_id','')
+              except: pass
+      print(wid)
+      " 2>/dev/null || echo "")
+      if [ -n "$WORKFLOW_ID" ]; then
+        KIRO_LOG="${TMPDIR:-/tmp}/kiro-log/kiro-chat.log"
+        python3 scripts/extract_token_usage.py \
+          --workflow-id "$WORKFLOW_ID" \
+          --audit-log audit/audit.ndjson \
+          --kiro-log "$KIRO_LOG" || echo "WARN: Token extraction failed"
+      else
+        echo "WARN: No workflow_id — skipping token extraction"
+      fi
   artifacts:
     paths:
       - validate-output/
       - workflow-output/
       - sandbox/
+      - audit/
     exclude:
       - sandbox/.git/**/*
       - sandbox/**/__pycache__/**/*
@@ -286,80 +345,63 @@ checkpoint-gates:python-tests:
       export SANDBOX_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['sandbox_path'])" < validate-output/project-config.json)
       export THRESHOLD=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('coverage_threshold','') or '')" < validate-output/project-config.json)
       export REPO_PATH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['repo_path'])" < validate-output/project-config.json)
-      export TARGET_BRANCH=$(python3 -c "import sys,json; print(json.load(sys.stdin)['target_branch'])" < validate-output/project-config.json)
-      export SANDBOX_REPO=$(python3 -c "import sys,json; print(json.load(sys.stdin).get('sandbox_repo',''))" < validate-output/project-config.json)
-      echo "SANDBOX_PATH=$SANDBOX_PATH  THRESHOLD=$THRESHOLD  REPO_PATH=$REPO_PATH"
+      export MULTI_SERVICE=$(python3 -c "import sys,json; print('true' if json.load(sys.stdin).get('multi_service') else '')" < validate-output/project-config.json)
+      export SERVICE_PATHS=$(python3 -c "import sys,json; c=json.load(sys.stdin); print(','.join(c.get('service_paths',[])) if c.get('multi_service') else '')" < validate-output/project-config.json)
+      echo "SANDBOX_PATH=$SANDBOX_PATH  THRESHOLD=$THRESHOLD  MULTI_SERVICE=$MULTI_SERVICE"
     - |
-      if ! find "$SANDBOX_PATH" -name "*.py" 2>/dev/null | head -1 | grep -q .; then
-        echo "No Python files found in $SANDBOX_PATH — skipping Python tests"
-        exit 0
-      fi
-    - |
-      # Install project deps if requirements.txt exists
-      if [ -f "$SANDBOX_PATH/requirements.txt" ]; then
-        pip install -q -r "$SANDBOX_PATH/requirements.txt" || true
-      fi
-      # Also install test/dev deps if present
-      for req in "$SANDBOX_PATH/requirements-test.txt" "$SANDBOX_PATH/requirements-dev.txt"; do
-        if [ -f "$req" ]; then
-          pip install -q -r "$req" || true
-        fi
-      done
-    - |
-      # Identify changed source files by diffing kiro-cli's output against origin.
-      #
-      # The sandbox/ artifact from execute-workflow has no .git (excluded to
-      # reduce artifact size). We re-init git, fetch the target branch, stage
-      # all artifact files, and diff the index against FETCH_HEAD. This gives
-      # us the list of files kiro-cli modified.
-      #
-      # Only source files under src/ and lib/ are included (not tests), so the
-      # coverage threshold applies to production code changes only.
-      export CHANGED_SRC_FILES=""
-      if [ -n "$SANDBOX_REPO" ]; then
-        cd sandbox
-        git init -q
-        for TOKEN_NAME in CI_JOB_TOKEN GL_TOKEN GITLAB_TOKEN; do
-          TOKEN_VAL=$(eval echo "\$$TOKEN_NAME")
-          if [ -z "$TOKEN_VAL" ]; then continue; fi
-          FETCH_URL=$(echo "$SANDBOX_REPO" | sed "s|https://|https://gitlab-ci-token:${TOKEN_VAL}@|")
-          if git fetch -q "$FETCH_URL" "$TARGET_BRANCH" 2>/dev/null; then
-            echo "Fetched origin/$TARGET_BRANCH with $TOKEN_NAME"
-            break
+      # Build list of Python service directories to test
+      if [ "$MULTI_SERVICE" = "true" ] && [ -n "$SERVICE_PATHS" ]; then
+        PY_SERVICES=""
+        IFS=',' read -ra SVC_ARRAY <<< "$SERVICE_PATHS"
+        for svc in "${SVC_ARRAY[@]}"; do
+          svc_sandbox="sandbox/$svc"
+          if find "$svc_sandbox" -name "*.py" 2>/dev/null | head -1 | grep -q .; then
+            PY_SERVICES="$PY_SERVICES $svc_sandbox"
           fi
         done
-        git add -A
-        # Only source files (not tests) under the service path
-        export CHANGED_SRC_FILES=$(git diff --name-only --cached FETCH_HEAD -- "$REPO_PATH/src/" "$REPO_PATH/lib/" 2>/dev/null | grep '\.py$' || true)
-        cd ..
-        if [ -n "$CHANGED_SRC_FILES" ]; then
-          echo "Changed source files:"
-          echo "$CHANGED_SRC_FILES" | sed 's/^/  /'
-        else
-          echo "No changed source files detected — will measure full coverage"
+        if [ -z "$PY_SERVICES" ]; then
+          echo "No Python services found — skipping"
+          exit 0
         fi
+        echo "Python services to test:$PY_SERVICES"
+      else
+        if ! find "$SANDBOX_PATH" -name "*.py" 2>/dev/null | head -1 | grep -q .; then
+          echo "No Python files found in $SANDBOX_PATH — skipping"
+          exit 0
+        fi
+        PY_SERVICES="$SANDBOX_PATH"
       fi
     - |
-      # Run pytest with full src/ coverage, then check threshold on changed files only
-      cd "$SANDBOX_PATH"
-      if find . -name "test_*.py" -o -name "*_test.py" 2>/dev/null | head -1 | grep -q .; then
-        COV_SRC="src"
-        if [ ! -d "src" ]; then COV_SRC="."; fi
-        pytest --tb=short --junitxml=test-results.xml \
-          --cov="$COV_SRC" --cov-report=term --cov-report=xml:coverage.xml 2>&1 | tee pytest-output.txt
-        PYTEST_EXIT=${PIPESTATUS[0]}
-        if [ "$PYTEST_EXIT" -ne 0 ]; then
-          echo "FAIL: pytest exited with code $PYTEST_EXIT"
-          exit "$PYTEST_EXIT"
+      # Test each Python service independently
+      OVERALL_EXIT=0
+      for SVC_DIR in $PY_SERVICES; do
+        echo ""
+        echo "=== Testing $SVC_DIR ==="
+        if [ -f "$SVC_DIR/requirements.txt" ]; then
+          pip install -q -r "$SVC_DIR/requirements.txt" || true
         fi
-        # Check coverage threshold — on changed files if available, otherwise overall
-        if [ -n "$THRESHOLD" ] && [ "$THRESHOLD" != "None" ]; then
-          export COVERAGE_THRESHOLD="$THRESHOLD"
-          export COVERAGE_XML="coverage.xml"
-          python3 "$CI_PROJECT_DIR/scripts/validation/check_coverage.py"
+        for req in "$SVC_DIR/requirements-test.txt" "$SVC_DIR/requirements-dev.txt"; do
+          if [ -f "$req" ]; then pip install -q -r "$req" || true; fi
+        done
+        cd "$SVC_DIR"
+        if find . -name "test_*.py" -o -name "*_test.py" 2>/dev/null | head -1 | grep -q .; then
+          COV_SRC="src"
+          if [ ! -d "src" ]; then COV_SRC="."; fi
+          pytest --tb=short --junitxml=test-results.xml \
+            --cov="$COV_SRC" --cov-report=term --cov-report=xml:coverage.xml 2>&1 | tee pytest-output.txt
+          PYTEST_EXIT=${PIPESTATUS[0]}
+          if [ "$PYTEST_EXIT" -ne 0 ]; then
+            echo "FAIL: pytest failed in $SVC_DIR (exit $PYTEST_EXIT)"
+            OVERALL_EXIT=1
+          fi
+        else
+          echo "No test files in $SVC_DIR — skipping"
         fi
-      else
-        echo "No test files found — skipping"
+        cd "$CI_PROJECT_DIR"
+      done
+      if [ "$OVERALL_EXIT" -ne 0 ]; then
+        echo "FAIL: One or more Python services failed tests"
+        exit 1
       fi
   artifacts:
     paths:
@@ -369,7 +411,81 @@ checkpoint-gates:python-tests:
       junit: "**/test-results.xml"
     when: always
 
-# 3c. Security scan — runs bandit + safety on generated code
+# 3c. Node.js test + coverage
+checkpoint-gates:node-tests:
+  stage: checkpoint-gates
+  image: ${NODE_IMAGE}
+  tags:
+    - santi-aws-genai
+  timeout: 15 minutes
+  needs:
+    - job: validate
+      artifacts: true
+    - job: execute-workflow
+      artifacts: true
+  rules:
+    - if: '$JIRA_ISSUE_KEY'
+      when: on_success
+    - when: never
+  script:
+    - |
+      SANDBOX_PATH=$(node -e "const d=require('./validate-output/project-config.json'); console.log(d.sandbox_path)" 2>/dev/null || echo "")
+      THRESHOLD=$(node -e "const d=require('./validate-output/project-config.json'); console.log(d.coverage_threshold||'')" 2>/dev/null || echo "")
+      echo "SANDBOX_PATH=$SANDBOX_PATH  THRESHOLD=$THRESHOLD"
+    - |
+      if [ ! -f "$SANDBOX_PATH/package.json" ]; then
+        echo "No package.json found in $SANDBOX_PATH — skipping Node tests"
+        exit 0
+      fi
+    - |
+      cd "$SANDBOX_PATH"
+      npm install --ignore-scripts 2>&1 | tail -5
+    - |
+      cd "$SANDBOX_PATH"
+      if grep -q '"test"' package.json; then
+        # Run tests with coverage if jest is configured
+        if grep -q 'jest' package.json || [ -f jest.config.js ] || [ -f jest.config.ts ]; then
+          npx jest --ci --coverage --coverageReporters=text --coverageReporters=cobertura \
+            --testResultsProcessor=jest-junit 2>&1 | tee test-output.txt
+          TEST_EXIT=${PIPESTATUS[0]}
+        else
+          npm test 2>&1 | tee test-output.txt
+          TEST_EXIT=${PIPESTATUS[0]}
+        fi
+        if [ "$TEST_EXIT" -ne 0 ]; then
+          echo "FAIL: Node tests exited with code $TEST_EXIT"
+          exit "$TEST_EXIT"
+        fi
+        # Check coverage threshold if cobertura report exists
+        if [ -n "$THRESHOLD" ] && [ "$THRESHOLD" != "None" ] && [ -f coverage/cobertura-coverage.xml ]; then
+          node -e "
+            const fs = require('fs');
+            const xml = fs.readFileSync('coverage/cobertura-coverage.xml', 'utf8');
+            const match = xml.match(/line-rate=\"([^\"]+)\"/);
+            if (match) {
+              const pct = (parseFloat(match[1]) * 100).toFixed(1);
+              const threshold = $THRESHOLD;
+              console.log('Line coverage: ' + pct + '%');
+              if (pct < threshold) {
+                console.log('FAIL: Coverage ' + pct + '% < threshold ' + threshold + '%');
+                process.exit(1);
+              }
+              console.log('PASS: Coverage ' + pct + '% >= threshold ' + threshold + '%');
+            } else {
+              console.log('WARN: Could not parse coverage from cobertura report');
+            }
+          "
+        fi
+      else
+        echo "No test script in package.json — skipping"
+      fi
+  artifacts:
+    paths:
+      - "**/test-output.txt"
+      - "**/coverage/"
+    when: always
+
+# 3d. Security scan — runs bandit + safety on generated code
 checkpoint-gates:security-scan:
   stage: checkpoint-gates
   image: ${PYTHON_IMAGE}
@@ -430,7 +546,7 @@ checkpoint-gates:security-scan:
       - checkpoint-output/
     when: always
 
-# 3d. Code review via kiro-cli (AI-assisted review + audit logging)
+# 3e. Code review via kiro-cli (AI-assisted review + audit logging)
 checkpoint-gates:review:
   extends: .wf-job
   stage: checkpoint-gates
@@ -472,12 +588,72 @@ finalize:
       artifacts: true
     - job: checkpoint-gates:python-tests
       artifacts: true
+    - job: checkpoint-gates:node-tests
+      artifacts: true
     - job: checkpoint-gates:security-scan
       artifacts: true
     - job: checkpoint-gates:review
       artifacts: true
   script:
     - mkdir -p finalize-output
+    # Validate audit log before finalizing — prints summary to CI log
+    - |
+      echo "--- Validating audit log ---"
+      if [ -f "audit/audit.ndjson" ]; then
+        python3 -c "
+      import json, sys
+      records = []
+      with open('audit/audit.ndjson') as f:
+          for line in f:
+              line = line.strip()
+              if line:
+                  try: records.append(json.loads(line))
+                  except: pass
+      counts = {'interaction': 0, 'checkpoint': 0, 'event': 0}
+      workflow_ids = set()
+      initiators = set()
+      event_types = set()
+      for r in records:
+          t = r.get('type','')
+          if t in counts: counts[t] += 1
+          wid = r.get('workflow_id','')
+          if wid: workflow_ids.add(wid)
+          ini = r.get('initiator','')
+          if ini: initiators.add(ini)
+          if t == 'event':
+              et = r.get('payload',{}).get('event_type','')
+              if et: event_types.add(et)
+      print(f'[audit-log] records={len(records)} interactions={counts[\"interaction\"]} checkpoints={counts[\"checkpoint\"]} events={counts[\"event\"]}')
+      print(f'[audit-log] workflow_ids={sorted(workflow_ids)}')
+      print(f'[audit-log] initiators={sorted(initiators)}')
+      print(f'[audit-log] event_types={sorted(event_types)}')
+      # Verify MCP servers were used
+      mcp_checks = {
+          'audit-logger': len(records) > 0,
+          'git-rollback': any(r.get('payload',{}).get('event_type','') in ('restore_point_created','rollback') or 'restore_point' in str(r.get('payload',{}).get('details',{})) for r in records),
+          'finops-cost-estimator': any(r.get('initiator','') == 'finops-cost-estimator' or r.get('payload',{}).get('event_type','') in ('cost_estimate_produced','cost_actuals_computed','cost_report') for r in records),
+      }
+      print()
+      print('--- MCP Server Usage Verification ---')
+      all_ok = True
+      for server, used in mcp_checks.items():
+          status = 'USED' if used else 'NOT DETECTED'
+          marker = '✓' if used else '✗'
+          print(f'  {marker} {server}: {status}')
+          if not used: all_ok = False
+      if not all_ok:
+          print('WARN: Some MCP servers were not detected in audit log — check workflow execution')
+      else:
+          print('All required MCP servers confirmed in audit log')
+      if len(records) == 0:
+          print('WARN: audit log is empty — audit-logger MCP may not have been called')
+      "
+      else
+        echo "WARN: audit/audit.ndjson not found — audit-logger MCP produced no output"
+        echo "  ✗ audit-logger: NOT DETECTED"
+        echo "  ✗ git-rollback: NOT DETECTED"
+        echo "  ✗ finops-cost-estimator: NOT DETECTED"
+      fi
     # The sandbox/ artifact from execute-workflow has no .git (excluded).
     # Save it aside, clone fresh, then overlay changes.
     - |

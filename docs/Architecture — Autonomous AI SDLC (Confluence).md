@@ -1,6 +1,6 @@
 # Architecture — Autonomous AI Software Development Lifecycle
 
-> **Status:** Live | **Last Updated:** 2026-03-31 | **Owner:** GenAI Innovation Team
+> **Status:** Live | **Last Updated:** 2026-04-09 | **Owner:** GenAI Innovation Team
 
 This system transforms natural language requirements (Jira tickets) into working, tested, documented code — delivered as merge requests — with full audit trails and safety guardrails.
 
@@ -8,6 +8,7 @@ The architecture uses [Kiro](https://kiro.dev) native primitives (Skills, Steeri
 
 > **Key URLs:**
 > - Jira: [https://test.genai-innovation.ericsson.net/jira-ai-dlc/](https://test.genai-innovation.ericsson.net/jira-ai-dlc/)
+> - Data Processor — Swagger UI: [https://test.genai-innovation.ericsson.net/python-processor/docs](https://test.genai-innovation.ericsson.net/python-processor/docs)
 > - Orchestration Repo: [kiro-autonomous-ai-sdlc](https://gitlab.internal.ericsson.com/san-tools-technology-platform/genai-innovation/ai-streams/developer/kiro-autonomous-ai-sdlc)
 > - Sandbox Repo: [kiro-sandbox](https://gitlab.internal.ericsson.com/san-tools-technology-platform/genai-innovation/ai-streams/developer/kiro-sandbox)
 
@@ -24,33 +25,77 @@ The system operates through two complementary paths:
 
 Both paths share the same workflow skills, guardrails, AI-DLC rules, and audit system.
 
-```mermaid
-graph TB
-    subgraph PATHA["Path A — Kiro IDE (Development)"]
-        DEV["Developer"] <-->|"interactive chat"| KIRO["Kiro IDE / kiro-cli"]
-    end
-
-    subgraph PATHB["Path B — CI Pipeline (Production)"]
-        JIRA["Jira Issue"] -->|"webhook"| GITLAB["GitLab CI"]
-        GITLAB -->|"kiro-cli --no-interactive"| KIROCI["kiro-cli (headless)"]
-        KIROCI -->|"MR"| SANDBOX_B["kiro-sandbox"]
-    end
-
-    subgraph SHARED["Shared Layer"]
-        SKILLS["Skills (WF1-WF5)"]
-        STEERING["Steering (guardrails)"]
-        RULES["AI-DLC Rule Details"]
-        MCP["MCP Servers"]
-        AUDIT["Audit Logger"]
-    end
-
-    KIRO --> SHARED
-    KIROCI --> SHARED
-
-    style PATHA fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style PATHB fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style SHARED fill:#fff9c4,stroke:#f57f17,stroke-width:2px
 ```
+┌─────────────────────────────────────────────────────┐
+│  Path A — Kiro IDE (Development)                    │
+│                                                     │
+│   ┌───────────┐  interactive chat  ┌──────────────┐ │
+│   │ Developer │←──────────────────→│ Kiro IDE /   │ │
+│   └───────────┘                    │ kiro-cli     │ │
+│                                    └──────┬───────┘ │
+└───────────────────────────────────────────┼─────────┘
+                                            │
+┌───────────────────────────────────────────┼─────────┐
+│  Path B — CI Pipeline (Production)        │         │
+│                                           │         │
+│   ┌────────────┐ webhook ┌───────────┐    │         │
+│   │ Jira Issue │────────→│ GitLab CI │    │         │
+│   └────────────┘         └─────┬─────┘    │         │
+│                                │          │         │
+│                   kiro-cli     │          │         │
+│                  --no-interactive          │         │
+│                                │          │         │
+│                                ↓          │         │
+│                     ┌──────────────────┐  │         │
+│                     │ kiro-cli         │  │         │
+│                     │ (headless)       │  │         │
+│                     └────────┬─────────┘  │         │
+│                              │ MR         │         │
+│                              ↓            │         │
+│                     ┌──────────────────┐  │         │
+│                     │ kiro-sandbox     │  │         │
+│                     └──────────────────┘  │         │
+└───────────────────────────────┼───────────┘
+                                │
+                                ↓
+┌───────────────────────────────────────────┐
+│  Shared Layer                             │
+│                                           │
+│   ┌─────────────────┐  ┌───────────────┐  │
+│   │ Skills (WF1-WF5)│  │ Steering      │  │
+│   └─────────────────┘  │ (guardrails)  │  │
+│   ┌─────────────────┐  └───────────────┘  │
+│   │ AI-DLC Rule     │  ┌───────────────┐  │
+│   │ Details         │  │ MCP Servers   │  │
+│   └─────────────────┘  └───────────────┘  │
+│   ┌─────────────────┐                     │
+│   │ Audit Logger    │                     │
+│   └─────────────────┘                     │
+└───────────────────────────────────────────┘
+```
+
+### 1.1 End-to-End Delivery: Jira → Code → EKS
+
+Once the AI generates code and the MR is merged, a per-service CI pipeline in `kiro-sandbox` takes over:
+
+```
+Jira Issue → AI-DLC (kiro-cli) → MR → merge to main
+  → semantic-release (version tag)
+  → Kaniko (container image → Artifactory → ECR)
+  → Helm chart (package → ECR OCI registry)
+  → GitOps (ArgoCD/Flux detects new chart → deploys to EKS)
+```
+
+| Stage | What happens |
+|---|---|
+| AI-DLC pipeline | Jira → validate → execute-workflow → checkpoint-gates → finalize → MR |
+| Merge to main | Triggers per-service `.gitlab-ci.yml` in kiro-sandbox |
+| semantic-release | Computes next semver, creates Git tag, publishes GitLab release |
+| Kaniko build | Builds container image, pushes to Artifactory + AWS ECR |
+| Helm publish | Packages chart, pushes to ECR OCI Helm registry |
+| GitOps deploy | ArgoCD/Flux detects new chart version in ECR, deploys to AWS EKS |
+
+The python-processor service is live at [https://test.genai-innovation.ericsson.net/python-processor/docs](https://test.genai-innovation.ericsson.net/python-processor/docs) — deployed automatically via this pipeline.
 
 ---
 
@@ -63,30 +108,45 @@ graph TB
 | **kiro-autonomous-ai-sdlc** | Orchestration — pipeline, agents, skills, steering, MCP servers, AI-DLC rules |
 | **kiro-sandbox** | Application code — services modified by the AI, plus AI-DLC artifacts |
 
-```mermaid
-graph TB
-    subgraph ORCH["kiro-autonomous-ai-sdlc (Orchestration)"]
-        direction TB
-        SKILLS2[".kiro/skills/ — WF1-WF5 SKILL.md"]
-        STEERING2[".kiro/steering/ — security, coding standards, sandbox"]
-        RULES2[".kiro/aws-aidlc-rule-details/ — common, construction, inception"]
-        AGENTS2["agents/ — developer.json, devops.json"]
-        MCP2["mcp-servers/ — audit-logger, security-scanner, dependency-scanner, git-rollback"]
-        PIPELINE2[".gitlab-ci-workflow.yml"]
-    end
-
-    subgraph SANDBOX2["kiro-sandbox (Application Code)"]
-        direction TB
-        JAVA2["services/java-api — Spring Boot 3.2.3, Java 21"]
-        PYTHON2["services/python-processor — FastAPI, Python 3.12"]
-        NODE2["services/node-gateway — Express, Node 20"]
-        AIDLC2["aidlc-docs/ — AI-DLC artifacts"]
-    end
-
-    PIPELINE2 -->|"clone → modify → push → MR"| SANDBOX2
-
-    style ORCH fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style SANDBOX2 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+```
+┌─────────────────────────────────────────────────────────┐
+│  kiro-autonomous-ai-sdlc (Orchestration)                │
+│                                                         │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │ .kiro/skills/ — WF1-WF5 SKILL.md                  │ │
+│  ├────────────────────────────────────────────────────┤ │
+│  │ .kiro/steering/ — security, coding standards,      │ │
+│  │                   sandbox                          │ │
+│  ├────────────────────────────────────────────────────┤ │
+│  │ .kiro/aws-aidlc-rule-details/ — common,            │ │
+│  │                   construction, inception          │ │
+│  ├────────────────────────────────────────────────────┤ │
+│  │ agents/ — developer.json, devops.json              │ │
+│  ├────────────────────────────────────────────────────┤ │
+│  │ mcp-servers/ — audit-logger, security-scanner,     │ │
+│  │   dependency-scanner, git-rollback,                │ │
+│  │   finops-cost-estimator                            │ │
+│  ├────────────────────────────────────────────────────┤ │
+│  │ .gitlab-ci-workflow.yml                            │ │
+│  └──────────────────────┬─────────────────────────────┘ │
+└─────────────────────────┼───────────────────────────────┘
+                          │
+            clone → modify → push → MR
+                          │
+                          ↓
+┌─────────────────────────────────────────────────────────┐
+│  kiro-sandbox (Application Code)                        │
+│                                                         │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │ services/java-api — Spring Boot 3.2.3, Java 21     │ │
+│  ├────────────────────────────────────────────────────┤ │
+│  │ services/python-processor — FastAPI, Python 3.12   │ │
+│  ├────────────────────────────────────────────────────┤ │
+│  │ services/node-gateway — Express, Node 20           │ │
+│  ├────────────────────────────────────────────────────┤ │
+│  │ aidlc-docs/ — AI-DLC artifacts                     │ │
+│  └────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
 ```
 
 
@@ -105,47 +165,67 @@ Every component maps to a Kiro-native primitive — no custom engine code:
 
 ### 2.3 Component Architecture
 
-```mermaid
-graph TB
-    subgraph ENTRY["Entry Points"]
-        IDE["Kiro IDE (interactive)"]
-        CLI["kiro-cli (headless CI)"]
-    end
+```
+┌───────────────────────────────────────┐
+│  Entry Points                         │
+│  ┌──────────────┐  ┌───────────────┐  │
+│  │ Kiro IDE     │  │ kiro-cli      │  │
+│  │ (interactive)│  │ (headless CI) │  │
+│  └──────┬───────┘  └───────┬───────┘  │
+└─────────┼──────────────────┼──────────┘
+          │                  │
+          └────────┬─────────┘
+                   ↓
+┌───────────────────────────────────────┐
+│  AI-DLC Lifecycle                     │
+│                                       │
+│  ┌─────────────────────────────────┐  │
+│  │ INCEPTION — Workspace Detection │  │
+│  │ → Requirements → Planning       │  │
+│  └──────────────┬──────────────────┘  │
+│        Handoff Artifact               │
+│  ┌──────────────↓──────────────────┐  │
+│  │ CONSTRUCTION — Code Generation  │  │
+│  │ → Build & Test → Docs           │  │
+│  └──────────────┬──────────────────┘  │
+└─────────────────┼─────────────────────┘
+          ┌───────┼───────┐
+          ↓       ↓       ↓
+┌─────────────────────────────────────────┐
+│  Guardrails Layer                       │
+│  ┌──────────────┐  ┌─────────────────┐  │
+│  │ security-    │  │ coding-         │  │
+│  │ rules.md     │  │ standards.md    │  │
+│  ├──────────────┤  ├─────────────────┤  │
+│  │ sandbox-     │  │ java / python / │  │
+│  │ boundaries.md│  │ nodejs guards   │  │
+│  └──────────────┘  └─────────────────┘  │
+└─────────────────────────────────────────┘
 
-    subgraph AIDLC["AI-DLC Lifecycle"]
-        INCEPTION["INCEPTION — Workspace Detection → Requirements → Planning"]
-        CONSTRUCTION["CONSTRUCTION — Code Generation → Build & Test → Docs"]
-        INCEPTION -->|"Handoff Artifact"| CONSTRUCTION
-    end
-
-    subgraph GUARDRAILS["Guardrails Layer"]
-        SEC["security-rules.md"]
-        CODE["coding-standards.md"]
-        SAND["sandbox-boundaries.md"]
-        LANG["java / python / nodejs guardrails"]
-    end
-
-    subgraph MCPSERVERS["MCP Servers"]
-        AL["audit-logger — SHA-256 hash chain"]
-        SS["security-scanner — bandit + safety"]
-        DS["dependency-scanner — outdated + CVE"]
-        GR["git-rollback — restore points"]
-    end
-
-    subgraph SANDBOX3["kiro-sandbox"]
-        SVC["services/ — java-api, python-processor, node-gateway"]
-    end
-
-    IDE --> AIDLC
-    CLI --> AIDLC
-    AIDLC --> GUARDRAILS
-    AIDLC --> MCPSERVERS
-    CONSTRUCTION -->|"code + tests + docs"| SANDBOX3
-
-    style ENTRY fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style AIDLC fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style GUARDRAILS fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    style MCPSERVERS fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+┌─────────────────────────────────────────┐
+│  MCP Servers                            │
+│  ┌──────────────────────────────────┐   │
+│  │ audit-logger — SHA-256 hash chain│   │
+│  ├──────────────────────────────────┤   │
+│  │ security-scanner — bandit+safety │   │
+│  ├──────────────────────────────────┤   │
+│  │ dependency-scanner — outdated+CVE│   │
+│  ├──────────────────────────────────┤   │
+│  │ git-rollback — restore points    │   │
+│  ├──────────────────────────────────┤   │
+│  │ finops-cost-estimator — cost     │   │
+│  └──────────────────────────────────┘   │
+└─────────────────────────────────────────┘
+          │
+          │  code + tests + docs
+          ↓
+┌─────────────────────────────────────────┐
+│  kiro-sandbox                           │
+│  ┌──────────────────────────────────┐   │
+│  │ services/ — java-api,            │   │
+│  │   python-processor, node-gateway │   │
+│  └──────────────────────────────────┘   │
+└─────────────────────────────────────────┘
 ```
 
 ---
@@ -154,36 +234,62 @@ graph TB
 
 AI-DLC (AI-Driven Development Lifecycle) is a structured two-phase process that adapts to request complexity.
 
-```mermaid
-flowchart LR
-    subgraph INCEPTION["INCEPTION — what to build"]
-        direction TB
-        WD["Workspace Detection — ALWAYS"]
-        RE["Reverse Engineering — CONDITIONAL"]
-        RA["Requirements Analysis — ALWAYS"]
-        US["User Stories — CONDITIONAL"]
-        WP["Workflow Planning — ALWAYS"]
-        AD["Application Design — CONDITIONAL"]
-        UG["Units Generation — CONDITIONAL"]
-        WD --> RE --> RA --> US --> WP --> AD --> UG
-    end
-
-    HANDOFF["Handoff Artifact"]
-
-    subgraph CONSTRUCTION["CONSTRUCTION — how to build it"]
-        direction TB
-        FD["Functional Design — CONDITIONAL"]
-        CG["Code Generation — ALWAYS"]
-        BT["Build and Test — ALWAYS"]
-        DOC["Documentation — ALWAYS"]
-        FD --> CG --> BT --> DOC
-    end
-
-    INCEPTION --> HANDOFF --> CONSTRUCTION
-
-    style INCEPTION fill:#bbdefb,stroke:#1565c0,stroke-width:2px
-    style CONSTRUCTION fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
-    style HANDOFF fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  INCEPTION — what to build                                               │
+│                                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Workspace Detection      │ ← ALWAYS                                   │
+│  └────────────┬─────────────┘                                            │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Reverse Engineering      │ ← CONDITIONAL                              │
+│  └────────────┬─────────────┘                                            │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Requirements Analysis    │ ← ALWAYS                                   │
+│  └────────────┬─────────────┘                                            │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ User Stories             │ ← CONDITIONAL                              │
+│  └────────────┬─────────────┘                                            │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Workflow Planning        │ ← ALWAYS                                   │
+│  └────────────┬─────────────┘                                            │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Application Design       │ ← CONDITIONAL                              │
+│  └────────────┬─────────────┘                                            │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Units Generation         │ ← CONDITIONAL                              │
+│  └────────────┬─────────────┘                                            │
+└───────────────┼──────────────────────────────────────────────────────────┘
+                ↓
+   ┌─────────────────────────┐
+   │    Handoff Artifact      │
+   └────────────┬────────────┘
+                ↓
+┌───────────────┼──────────────────────────────────────────────────────────┐
+│  CONSTRUCTION — how to build it                                          │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Functional Design        │ ← CONDITIONAL                              │
+│  └────────────┬─────────────┘                                            │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Code Generation          │ ← ALWAYS                                   │
+│  └────────────┬─────────────┘                                            │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Build and Test           │ ← ALWAYS                                   │
+│  └────────────┬─────────────┘                                            │
+│               ↓                                                          │
+│  ┌──────────────────────────┐                                            │
+│  │ Documentation            │ ← ALWAYS                                   │
+│  └──────────────────────────┘                                            │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 **INCEPTION** analyzes the request, gathers requirements, and selects the appropriate workflow (WF1-WF5). It produces a Handoff Artifact consumed by CONSTRUCTION.
@@ -221,23 +327,115 @@ Each WF skill loads rules from `.kiro/aws-aidlc-rule-details/` at startup:
 
 ### 4.2 WF1 — Requirement to Software (Primary)
 
-```mermaid
-flowchart LR
-    REQ["Parse Requirement"]
-    SPEC["Create Kiro Spec"]
-    RP["Create Restore Point"]
-    IMPL["Implement Tasks"]
-    CR["Code Review ✓"]
-    COV["Test Coverage ✓ ≥80%"]
-    SEC["Security Scan ✓"]
-    DOCS["Generate Docs"]
-    MR["Merge"]
+```
+┌───────┐   ┌────────┐   ┌────────┐   ┌───────┐   ┌─────┐   ┌─────┐   ┌─────┐   ┌──────┐   ┌───────┐
+│ Parse │   │ Create │   │ Create │   │ Impl  │   │Code │   │Test │   │ Sec │   │ Gen  │   │       │
+│ Req   │──→│ Kiro   │──→│Restore │──→│ Tasks │──→│Rev ✓│──→│Cov ✓│──→│Scan │──→│ Docs │──→│ Merge │
+│       │   │ Spec   │   │ Point  │   │       │   │     │   │≥80% │   │  ✓  │   │      │   │       │
+└───────┘   └────────┘   └────────┘   └───────┘   └─────┘   └─────┘   └─────┘   └──────┘   └───────┘
+                                                   ^^^^^^    ^^^^^^    ^^^^^^
+                                                   checkpoint gates
+```
 
-    REQ --> SPEC --> RP --> IMPL --> CR --> COV --> SEC --> DOCS --> MR
+### 4.2.1 Example: WF1 Flow for Adding a New Endpoint
 
-    style CR fill:#fff9c4,stroke:#f57f17
-    style COV fill:#fff9c4,stroke:#f57f17
-    style SEC fill:#fff9c4,stroke:#f57f17
+Paste something like this into Kiro CLI:
+
+> Using AI-DLC, as a Product Owner I want to add a new REST API endpoint GET /api/v1/health/detailed to the python-processor service in the kiro-sandbox repository (../kiro-sandbox/services/python-processor). The endpoint should return a JSON response with service name, version, uptime, and current timestamp.
+
+**INCEPTION PHASE:**
+
+1. **Workspace Detection** — scans `../kiro-sandbox/services/python-processor`, detects brownfield Python/FastAPI project
+2. **Reverse Engineering** (if first time) — catalogs existing routes, models, dependencies
+3. **Requirements Analysis** — asks clarifying questions:
+   - Should the endpoint require authentication?
+   - What HTTP status codes should it return?
+   - Should uptime be calculated from process start or deployment time?
+4. **Workflow Planning** — classifies as WF1 (new feature), presents execution plan for approval
+5. **Handoff Artifact** — generates `workflow-handoff.md` consumed by WF1
+
+**CONSTRUCTION PHASE (WF1):**
+
+6. **Functional Design** — defines the response schema:
+
+```json
+{
+  "service": "python-processor",
+  "version": "1.2.0",
+  "uptime_seconds": 3842,
+  "timestamp": "2026-04-09T15:38:43Z"
+}
+```
+
+7. **Code Generation** — produces minimal code:
+
+```python
+# routers/health.py
+import time
+from datetime import datetime, timezone
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/api/v1/health", tags=["health"])
+_start_time = time.monotonic()
+
+@router.get("/detailed")
+async def detailed_health():
+    return {
+        "service": "python-processor",
+        "version": "1.2.0",
+        "uptime_seconds": round(time.monotonic() - _start_time),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+```
+
+```python
+# test_health.py
+from fastapi.testclient import TestClient
+from main import app
+
+client = TestClient(app)
+
+def test_detailed_health():
+    resp = client.get("/api/v1/health/detailed")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["service"] == "python-processor"
+    assert "uptime_seconds" in body
+    assert "timestamp" in body
+```
+
+8. **Checkpoint Gates** (all must pass before merge):
+
+| Checkpoint | What runs | Pass criteria |
+|---|---|---|
+| Code Review | AI reviews correctness, conventions, dead code | No blocking issues |
+| Security Scan | `scan_code` + `scan_dependencies` via MCP | No HIGH/CRITICAL findings |
+| Test Coverage | `pytest --cov` on changed files | ≥80% line coverage |
+
+9. **Generate Documentation** — 5 mandatory artifacts:
+   - `docs/release-notes-{ISSUE_KEY}.md`
+   - `docs/CHANGELOG.md`
+   - `docs/openapi.yaml`
+   - `docs/architecture.md`
+   - `docs/wf1-summary-{ISSUE_KEY}.md`
+
+10. **Merge** — if all checkpoints pass, code is merged to the target branch
+
+**Cost Report** — automatic at the end:
+
+```
+## 💰 Workflow Cost Summary
+
+Workflow: wf1-requirement-to-software
+
+| Dimension         | Quantity      | Unit Price          | Cost       |
+|-------------------|---------------|---------------------|------------|
+| LLM Input Tokens  | ~50K tokens   | $0.003 / 1K tokens  | ~$0.15     |
+| LLM Output Tokens | ~20K tokens   | $0.015 / 1K tokens  | ~$0.30     |
+| Compute Time      | ~7m           | $0.00005 / sec      | ~$0.02     |
+| MCP Tool Calls    | ~15           | $0.0001 / call      | ~$0.002    |
+| Checkpoints       | 3             | $0.001 / checkpoint | ~$0.003    |
+| Total             |               |                     | ~$0.50     |
 ```
 
 ### 4.3 Checkpoint Gates
@@ -258,33 +456,35 @@ All checkpoints must pass before merge:
 
 ### 5.1 Pipeline Architecture
 
-```mermaid
-flowchart LR
-    JIRA3["Jira Issue — Ready for AI Dev"]
-    WEBHOOK3["Jira Automation Webhook"]
-
-    subgraph PIPELINE3["GitLab CI Pipeline"]
-        direction LR
-        V3["validate"]
-        EW3["execute-workflow — kiro-cli in sandbox/"]
-
-        subgraph GATES["checkpoint-gates (parallel)"]
-            JT3["java-tests"]
-            PT3["python-tests"]
-            SS3["security-scan"]
-            RV3["review"]
-        end
-
-        FIN3["finalize — push + MR + Jira"]
-
-        V3 --> EW3 --> GATES --> FIN3
-    end
-
-    JIRA3 --> WEBHOOK3 --> PIPELINE3
-    FIN3 --> MR3["MR on kiro-sandbox — ai/ISSUE_KEY"]
-
-    style PIPELINE3 fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style GATES fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1px
+```
+                                        ┌──────────────────────────────────────────────────────────┐
+                                        │  GitLab CI Pipeline                                      │
+                                        │                                                          │
+┌────────────┐   ┌──────────┐           │  ┌──────────┐   ┌──────────────┐   ┌─────────────────┐   │
+│ Jira Issue │   │  Jira    │           │  │          │   │   execute-   │   │ checkpoint-gates│   │
+│ Ready for  │──→│Automation│──────────→│  │ validate │──→│   workflow   │──→│   (parallel)    │   │
+│ AI Dev     │   │ Webhook  │           │  │          │   │  kiro-cli in │   │                 │   │
+└────────────┘   └──────────┘           │  └──────────┘   │  sandbox/    │   │ ┌─────────────┐ │   │
+                                        │                 └──────────────┘   │ │ java-tests  │ │   │
+                                        │                                    │ │ python-tests│ │   │
+                                        │                                    │ │ node-tests  │ │   │
+                                        │                                    │ │ security-   │ │   │
+                                        │                                    │ │   scan      │ │   │
+                                        │                                    │ │ review      │ │   │
+                                        │                                    │ └──────┬──────┘ │   │
+                                        │                                    └────────┼────────┘   │
+                                        │                                             ↓            │
+                                        │                                    ┌─────────────────┐   │
+                                        │                                    │    finalize      │   │
+                                        │                                    │ push + MR + Jira │   │
+                                        │                                    └────────┬────────┘   │
+                                        └─────────────────────────────────────────────┼────────────┘
+                                                                                      ↓
+                                                                             ┌─────────────────┐
+                                                                             │ MR on kiro-      │
+                                                                             │ sandbox —        │
+                                                                             │ ai/ISSUE_KEY     │
+                                                                             └─────────────────┘
 ```
 
 ### 5.2 Pipeline Stages
@@ -294,7 +494,8 @@ flowchart LR
 | **validate** | kiro-ci | Resolve Jira project → service → workflow → coverage threshold |
 | **execute-workflow** | kiro-ci | Clone kiro-sandbox, `cd sandbox`, run AI-DLC via kiro-cli |
 | **java-tests** | maven:3.9-eclipse-temurin-21 | `mvn verify` + JaCoCo coverage |
-| **python-tests** | python:3.12-slim | `pytest --cov` with per-file coverage |
+| **python-tests** | python:3.12-slim | `pytest --cov` with per-service coverage (multi-service aware) |
+| **node-tests** | node:18 | `npm test` + Jest coverage (skips if no `package.json`) |
 | **security-scan** | python:3.12-slim | `bandit` + `safety` (blocks on HIGH/CRITICAL) |
 | **review** | kiro-ci | AI-assisted code review via kiro-cli |
 | **finalize** | kiro-ci | Push branch, create MR, transition Jira |
@@ -302,32 +503,62 @@ flowchart LR
 
 ### 5.3 End-to-End Sequence
 
-```mermaid
-sequenceDiagram
-    actor PO as Product Owner
-    participant JIRA4 as Jira (EKS)
-    participant GL4 as GitLab CI
-    participant KIRO4 as kiro-cli
-    participant SANDBOX4 as kiro-sandbox
-
-    PO->>JIRA4: Create issue + set SERVICE_NAME
-    PO->>JIRA4: Transition to "Ready for AI Dev"
-    JIRA4->>GL4: Webhook POST (issue key, summary, service)
-    GL4->>GL4: validate (resolve config)
-    GL4->>SANDBOX4: clone kiro-sandbox.git
-    GL4->>KIRO4: execute-workflow (AI-DLC)
-    KIRO4->>SANDBOX4: write code + tests + docs
-    GL4->>GL4: checkpoint-gates (parallel)
-    GL4->>SANDBOX4: push ai/ISSUE_KEY, create MR
-    GL4->>JIRA4: transition to "In Review"
-    PO->>SANDBOX4: review MR
+```
+  Product Owner          Jira (EKS)         GitLab CI          kiro-cli        kiro-sandbox
+       │                     │                  │                  │                │
+       │  Create issue +     │                  │                  │                │
+       │  set SERVICE_NAME   │                  │                  │                │
+       │────────────────────→│                  │                  │                │
+       │                     │                  │                  │                │
+       │  Transition to      │                  │                  │                │
+       │  "Ready for AI Dev" │                  │                  │                │
+       │────────────────────→│                  │                  │                │
+       │                     │                  │                  │                │
+       │                     │  Webhook POST    │                  │                │
+       │                     │  (issue key,     │                  │                │
+       │                     │   summary,       │                  │                │
+       │                     │   service)       │                  │                │
+       │                     │─────────────────→│                  │                │
+       │                     │                  │                  │                │
+       │                     │                  │  validate        │                │
+       │                     │                  │  (resolve config)│                │
+       │                     │                  │─────────┐        │                │
+       │                     │                  │←────────┘        │                │
+       │                     │                  │                  │                │
+       │                     │                  │  clone kiro-     │                │
+       │                     │                  │  sandbox.git     │                │
+       │                     │                  │─────────────────────────────────→│
+       │                     │                  │                  │                │
+       │                     │                  │  execute-workflow│                │
+       │                     │                  │  (AI-DLC)        │                │
+       │                     │                  │─────────────────→│                │
+       │                     │                  │                  │                │
+       │                     │                  │                  │  write code +  │
+       │                     │                  │                  │  tests + docs  │
+       │                     │                  │                  │───────────────→│
+       │                     │                  │                  │                │
+       │                     │                  │  checkpoint-gates│                │
+       │                     │                  │  (parallel)      │                │
+       │                     │                  │─────────┐        │                │
+       │                     │                  │←────────┘        │                │
+       │                     │                  │                  │                │
+       │                     │                  │  push ai/ISSUE_KEY, create MR    │
+       │                     │                  │─────────────────────────────────→│
+       │                     │                  │                  │                │
+       │                     │  transition to   │                  │                │
+       │                     │  "In Review"     │                  │                │
+       │                     │←─────────────────│                  │                │
+       │                     │                  │                  │                │
+       │  review MR          │                  │                  │                │
+       │─────────────────────────────────────────────────────────────────────────→│
+       │                     │                  │                  │                │
 ```
 
 ### 5.4 Retry and Recovery
 
 | Layer | Mechanism | Detail |
 |---|---|---|
-| kiro-cli | `retry-wrapper.sh` | 3 retries, exponential backoff |
+| kiro-cli | `retry-wrapper.sh` | 5 retries, exponential backoff (15s→300s cap), rate-limit detection (60s cooldown) |
 | GitLab job | `retry: max: 2` | Runner crashes, network timeouts |
 | MR creation | HTTP 409 handler | Fetches existing MR URL |
 | Rollback | `git-rollback` MCP | Restore point before implementation |
@@ -340,21 +571,33 @@ A dedicated Jira instance serves as the issue tracking frontend for the AI-DLC p
 
 > **URL:** [https://test.genai-innovation.ericsson.net/jira-ai-dlc/](https://test.genai-innovation.ericsson.net/jira-ai-dlc/)
 
-```mermaid
-graph TB
-    USER6["Developer / PO"] -->|"browser"| INGRESS6["AWS ALB Ingress — test.genai-innovation.ericsson.net"]
-    INGRESS6 -->|"/jira-ai-dlc/"| JIRA6["Jira Pod — AWS EKS"]
-    JIRA6 -->|"Automation webhook"| GITLAB6["GitLab Pipeline Trigger API"]
-    GITLAB6 -->|"pipeline"| RUNNER6["GitLab Runner (EKS)"]
-    RUNNER6 -->|"clone + push + MR"| SANDBOX6["kiro-sandbox.git"]
-    RUNNER6 -->|"REST API"| JIRA6
-
-    subgraph EKS6["AWS EKS Cluster"]
-        JIRA6
-        RUNNER6
-    end
-
-    style EKS6 fill:#fff3e0,stroke:#e65100,stroke-width:2px
+```
+┌──────────────┐   browser    ┌──────────────────────────────────────────┐
+│ Developer /  │─────────────→│ AWS ALB Ingress                         │
+│ PO           │              │ test.genai-innovation.ericsson.net       │
+└──────────────┘              └──────────────────┬───────────────────────┘
+                                                 │ /jira-ai-dlc/
+                                                 ↓
+                              ┌──────────────────────────────────────────┐
+                              │  AWS EKS Cluster                        │
+                              │                                         │
+                              │  ┌──────────────┐  Automation  ┌──────┐ │
+                              │  │  Jira Pod    │──webhook────→│GitLab│ │
+                              │  │              │              │Pipe- │ │
+                              │  │              │←─REST API──┐ │line  │ │
+                              │  └──────────────┘            │ │Trigger│
+                              │                              │ │API   │ │
+                              │  ┌──────────────┐            │ └──┬───┘ │
+                              │  │ GitLab Runner│────────────┘    │     │
+                              │  │ (EKS)       │←─ pipeline ──────┘     │
+                              │  └──────┬───────┘                       │
+                              └─────────┼───────────────────────────────┘
+                                        │
+                           clone + push + MR
+                                        ↓
+                              ┌──────────────────┐
+                              │ kiro-sandbox.git  │
+                              └──────────────────┘
 ```
 
 | Component | Detail |
@@ -376,6 +619,7 @@ graph TB
 | **security-rules.md** | Always | No hardcoded secrets, input validation, dependency scanning |
 | **coding-standards.md** | Always | Code review, coverage thresholds, documentation standards |
 | **sandbox-boundaries.md** | Always | No production access, sandbox-only resources |
+| **finops-cost-reporting.md** | Always | Mandatory cost reporting at end of every workflow run |
 | **java-guardrails.md** | fileMatch `*.java` | Java/Spring conventions |
 | **python-guardrails.md** | fileMatch `*.py` | Python/FastAPI conventions |
 | **nodejs-guardrails.md** | fileMatch `*.js`, `*.ts` | Node.js/TypeScript conventions |
@@ -395,27 +639,44 @@ graph TB
 
 ### 7.3 Checkpoint Flow
 
-```mermaid
-flowchart TD
-    GEN["Code generated by LLM"]
-    AUTO["Automated checkpoint — compile + lint + test"]
-    SEC7["Security scan — bandit + safety"]
-    REVIEW7["Code review — AI-assisted"]
-    MR7["Create MR"]
-    RETRY7["Retry with error context — max 2x"]
-    FAIL7["Workflow STOPS"]
-
-    GEN --> AUTO
-    AUTO -->|"pass"| SEC7
-    AUTO -->|"fail"| RETRY7
-    RETRY7 -->|"pass"| SEC7
-    RETRY7 -->|"still failing"| FAIL7
-    SEC7 -->|"pass"| REVIEW7
-    SEC7 -->|"HIGH/CRITICAL"| FAIL7
-    REVIEW7 -->|"approved"| MR7
-
-    style FAIL7 fill:#ffcdd2,stroke:#c62828
-    style MR7 fill:#c8e6c9,stroke:#2e7d32
+```
+┌──────────────────────┐
+│ Code generated by LLM│
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐
+│ Automated checkpoint │
+│ compile + lint + test│
+└─────┬────────┬───────┘
+      │        │
+     pass     fail
+      │        ↓
+      │   ┌──────────────────────────┐
+      │   │ Retry with error context │
+      │   │ max 2x                   │
+      │   └─────┬──────────┬─────────┘
+      │        pass    still failing
+      │         │          ↓
+      │         │   ┌──────────────┐
+      │         │   │ Workflow     │
+      ↓         ↓   │ STOPS ✗     │
+┌──────────────────┐└──────────────┘
+│ Security scan    │       ↑
+│ bandit + safety  │       │
+└─────┬────────┬───┘       │
+      │        │           │
+     pass   HIGH/CRITICAL  │
+      │        └───────────┘
+      ↓
+┌──────────────────┐
+│ Code review      │
+│ AI-assisted      │
+└─────┬────────────┘
+      │ approved
+      ↓
+┌──────────────────┐
+│ Create MR ✓      │
+└──────────────────┘
 ```
 
 ---
@@ -428,8 +689,9 @@ flowchart TD
 | **security-scanner** | Static analysis + dependency CVE scanning | `scan_code`, `scan_dependencies`, `get_scan_report` |
 | **dependency-scanner** | Outdated dependency detection | `scan_outdated`, `check_compatibility`, `get_upgrade_plan` |
 | **git-rollback** | Git restore points and safe rollback | `create_restore_point`, `rollback`, `verify_consistency` |
+| **finops-cost-estimator** | Per-run cost estimation and reporting | `estimate_workflow_cost`, `calculate_workflow_cost`, `get_cost_report`, `get_historical_baseline` |
 
-All servers run via stdio transport. In CI: Python runtime in kiro-ci image. Locally: project virtual environment.
+All servers run via stdio transport. In CI: Python runtime in kiro-ci image. Locally: Docker containers from ECR (generated by `setup-kiro.sh`).
 
 ---
 
@@ -448,135 +710,18 @@ All servers run via stdio transport. In CI: Python runtime in kiro-ci image. Loc
 
 ---
 
-## 10. Service Configuration
+## 9.5 FinOps Cost Reporting
 
-```yaml
-# config/jira-project-mappings.yml
-sandbox_repo: https://gitlab.internal.ericsson.com/.../kiro-sandbox.git
+At the end of every workflow run, the agent calls `calculate_workflow_cost` and includes a cost breakdown in its final response. Costs are tracked across five dimensions:
 
-defaults:
-  workflow: wf1-requirement-to-software
-  agent: developer
-  trigger_status: "Ready for AI Dev"
-
-projects:
-  QWE:
-    default_service: java-api
-    services:
-      java-api:
-        repo_path: services/java-api
-        target_branch: main
-      python-processor:
-        repo_path: services/python-processor
-        target_branch: main
-      node-gateway:
-        repo_path: services/node-gateway
-        target_branch: main
-```
-
-Set `SERVICE_NAME` custom field on the Jira issue. Falls back to `default_service` if empty.
-
----
-
-## 11. CI Runner Image
-
-`docker/kiro-ci/Dockerfile` — multi-language image:
-
-| Component | Version | Purpose |
+| Dimension | Unit Price | Source |
 |---|---|---|
-| **Python** | 3.12 | kiro-cli, MCP servers, bandit, safety, pytest |
-| **OpenJDK** | 21 | Java service compilation and testing |
-| **Maven** | 3.9 | Java build tool |
-| **Node.js** | 20 LTS | Node service compilation and testing |
-| **kiro-cli** | latest | AI workflow execution |
+| LLM Input Tokens | $0.003 / 1K tokens | Kiro-cli log parsing or compute-time estimation |
+| LLM Output Tokens | $0.015 / 1K tokens | Kiro-cli log parsing or compute-time estimation |
+| Compute Time | $0.00005 / sec | workflow_start → workflow_end timestamps |
+| MCP Tool Calls | $0.0001 / call | tool_invocation events in audit log |
+| Checkpoints | $0.001 / checkpoint | checkpoint records in audit log |
 
----
+Unit prices are configured in `config/finops-cost-model.yml`. Reports are written to `reports/finops/` as JSON and Markdown. Historical baselines are maintained per workflow type to improve estimate accuracy over time.
 
-## 12. Sandbox Application
-
-Multi-service demo application in `kiro-sandbox`:
-
-| Service | Stack | Port | Purpose |
-|---|---|---|---|
-| **java-api** | Spring Boot 3.2.3 / Java 21 / H2 | 8088 | User CRUD REST API |
-| **python-processor** | FastAPI / Python 3.12 | 5000 | Data processing and reports |
-| **node-gateway** | Express / Node 20 | 3000 | API gateway |
-
----
-
-## 13. Required CI/CD Variables
-
-| Variable | Description |
-|---|---|
-| `GL_TOKEN` | GitLab token with `api`, `read_repository`, `write_repository` on kiro-sandbox |
-| `JIRA_ETEAM_TOKEN` | Jira PAT for REST API (transitions, comments) |
-| `PIPELINE_TRIGGER_TOKEN` | GitLab pipeline trigger token (Jira Automation) |
-
----
-
-## 14. Evolution: AgentCore → Kiro Native
-
-```mermaid
-graph LR
-    subgraph PHASE1["Phase 1 — AgentCore (Week 1)"]
-        P1A["Custom WorkflowEngine"]
-        P1B["YAML step definitions"]
-        P1C["Direct Bedrock calls"]
-    end
-
-    subgraph PHASE2["Phase 2 — Strands Migration (Week 2)"]
-        P2A["+ Strands SDK adapter"]
-        P2B["+ Multi-agent patterns"]
-        P2C["+ Ollama local dev"]
-    end
-
-    subgraph PHASE3["Phase 3 — Kiro Native (Week 3)"]
-        P3A["Skills + Steering + Hooks"]
-        P3B["AI-DLC lifecycle"]
-        P3C["kiro-cli in GitLab CI"]
-        P3D["Zero custom engine"]
-    end
-
-    PHASE1 --> PHASE2 --> PHASE3
-
-    style PHASE1 fill:#ffcdd2,stroke:#c62828,stroke-width:2px
-    style PHASE2 fill:#fff9c4,stroke:#f57f17,stroke-width:2px
-    style PHASE3 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
-```
-
-| Dimension | AgentCore (Week 1-2) | Kiro Native (Week 3) |
-|---|---|---|
-| Workflow definition | Custom YAML steps | SKILL.md files |
-| Guardrails | `guardrails/*.yaml` | Steering files (.md) |
-| Triggers | Custom webhook handler | Jira Automation + GitLab triggers |
-| LLM integration | Custom `LLMClient` + Strands adapter | kiro-cli (built-in) |
-| Tool integration | `@tool` Python functions | MCP servers (stdio) |
-| CI execution | `agentcore run --mode ci` | `kiro-cli chat --no-interactive` |
-| Custom code | ~5,000+ lines | ~0 (pipeline YAML + config) |
-
----
-
-## 15. Key Design Decisions
-
-| Decision | Rationale |
-|---|---|
-| Two-repo model | Clean separation: pipeline config never mixed with application code |
-| AI-DLC two-phase lifecycle | INCEPTION (what) and CONSTRUCTION (how) with explicit handoff |
-| Kiro primitives over custom engine | Zero maintenance, declarative, version-controlled |
-| MCP servers over custom tools | Standard protocol, stdio transport, reusable |
-| Parallel checkpoint gates | Faster feedback, clearer failure isolation |
-| `cd sandbox` before kiro-cli | All file writes land in the correct repository |
-| Conventional commits | `feat({ISSUE_KEY}): {summary}` for traceability |
-| Verbosity mode | `silent` for CI, `debug` for interactive |
-
----
-
-## 16. Links
-
-| Resource | URL |
-|---|---|
-| **Jira Instance** | [https://test.genai-innovation.ericsson.net/jira-ai-dlc/](https://test.genai-innovation.ericsson.net/jira-ai-dlc/) |
-| **Orchestration Repo** | [kiro-autonomous-ai-sdlc](https://gitlab.internal.ericsson.com/san-tools-technology-platform/genai-innovation/ai-streams/developer/kiro-autonomous-ai-sdlc) |
-| **Sandbox Repo** | [kiro-sandbox](https://gitlab.internal.ericsson.com/san-tools-technology-platform/genai-innovation/ai-streams/developer/kiro-sandbox) |
-| **Week 3 Report** | [Mandate-Progress-Report-Week3.md](Mandate-Progress-Report-Week3.md) |
-| **Kiro Docs** | [https://kiro.dev/docs](https://kiro.dev/docs) |
+Token estimation priority: (1) kiro-cli trace log (actual API counts), (2) manual injection, (3) compute-time estimation (duration × 40 tok/s).

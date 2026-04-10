@@ -12,9 +12,13 @@ This workflow takes an existing codebase and generates comprehensive documentati
 
 ## Workflow Steps
 
-1. **Analyze Codebase** — Accept a target codebase path and documentation types to generate (`api`, `architecture`, `onboarding`) as input. Scan the codebase to identify public interfaces, module structure, dependencies, and existing documentation. Log the analysis via audit-logger MCP: `log_interaction`.
+1. **Start Workflow** — Generate a `workflow_id` using the pattern `wf5-{issue-key-or-short-description}` (e.g. `wf5-api-docs-refresh`). Log workflow start immediately via audit-logger MCP: `log_event` with `event_type: "workflow_start"`, including the target codebase path and documentation types in `details`. Record this `workflow_id` — it must be used consistently for every subsequent audit-logger and finops call in this workflow.
 
-2. **Generate API Documentation** — When `api` is requested, generate documentation covering all public interfaces:
+   **MANDATORY**: This MCP call MUST succeed before proceeding. Do NOT substitute writing to `aidlc-docs/audit.md`.
+
+2. **Analyze Codebase** — Accept a target codebase path and documentation types to generate (`api`, `architecture`, `onboarding`) as input. Scan the codebase to identify public interfaces, module structure, dependencies, and existing documentation. Log the analysis via audit-logger MCP: `log_interaction`.
+
+3. **Generate API Documentation** — When `api` is requested, generate documentation covering all public interfaces:
    - Document all public functions, classes, methods, and interfaces
    - Include parameter descriptions, return types, and usage examples
    - Document error handling and exception behavior
@@ -22,14 +26,14 @@ This workflow takes an existing codebase and generates comprehensive documentati
    - Follow standards defined in `references/doc-standards.md`
    - Log generation via audit-logger MCP: `log_interaction`
 
-3. **Generate Architecture Diagrams** — When `architecture` is requested, generate diagrams representing the system structure:
+4. **Generate Architecture Diagrams** — When `architecture` is requested, generate diagrams representing the system structure:
    - Component dependency diagrams (Mermaid format)
    - Module interaction diagrams
    - Data flow diagrams for key workflows
    - Layer diagrams showing system architecture
    - Log generation via audit-logger MCP: `log_interaction`
 
-4. **Generate Onboarding Guides** — When `onboarding` is requested, generate guides for new developers:
+5. **Generate Onboarding Guides** — When `onboarding` is requested, generate guides for new developers:
    - Project setup and installation instructions
    - Development environment configuration
    - Codebase navigation guide (key directories, entry points)
@@ -37,7 +41,7 @@ This workflow takes an existing codebase and generates comprehensive documentati
    - Contribution guidelines and coding conventions
    - Log generation via audit-logger MCP: `log_interaction`
 
-5. **Accuracy Validation Checkpoint** — Validate generated documentation for accuracy:
+6. **Accuracy Validation Checkpoint** — Validate generated documentation for accuracy:
    - Verify API signatures match actual code signatures
    - Verify code examples compile or parse without errors
    - Verify referenced files and modules exist in the codebase
@@ -45,14 +49,14 @@ This workflow takes an existing codebase and generates comprehensive documentati
    - Run `scripts/validate_docs.py` for automated accuracy checks
    - Log result via audit-logger MCP: `log_checkpoint`
 
-6. **Completeness Review Checkpoint** — Review generated documentation for completeness:
+7. **Completeness Review Checkpoint** — Review generated documentation for completeness:
    - Verify all public interfaces are documented (API docs)
    - Verify all major components are represented (architecture diagrams)
    - Verify all setup steps are included (onboarding guides)
    - Apply criteria from `references/completeness-criteria.md`
    - Log result via audit-logger MCP: `log_checkpoint`
 
-7. **Generate Delta Report** — Compare generated documentation against existing documentation:
+8. **Generate Delta Report** — Compare generated documentation against existing documentation:
    - Identify new documentation sections not previously covered
    - Identify existing documentation that is outdated or inaccurate
    - Identify gaps where documentation is missing entirely
@@ -60,7 +64,13 @@ This workflow takes an existing codebase and generates comprehensive documentati
    - Include accuracy and completeness metrics
    - Log report via audit-logger MCP: `log_event`
 
-8. **Audit Log** — Record the complete workflow execution summary via audit-logger MCP: `log_event` with event_type `workflow_end`, including all checkpoint results, delta report reference, and output artifacts.
+9. **Audit Log** — Record the complete workflow execution summary via audit-logger MCP: `log_event` with event_type `workflow_end`, including all checkpoint results, delta report reference, and output artifacts.
+
+    **MANDATORY**: This MCP call MUST succeed. Do NOT skip it or substitute writing to `aidlc-docs/audit.md`.
+
+10. **Cost Report** — After logging `workflow_end`, call finops-cost-estimator MCP: `calculate_workflow_cost` using the active `workflow_id`. Then log the cost result back to the audit trail via audit-logger MCP: `log_event` with `event_type: "cost_report"`. Include the full cost breakdown table in the final response to the user per the format defined in `finops-cost-reporting.md`.
+
+    **MANDATORY**: Both MCP calls MUST be made. Call `calculate_workflow_cost` even if the cost is zero.
 
 ## Checkpoints (MUST pass before proceeding)
 
@@ -94,3 +104,4 @@ Log the failure via audit-logger MCP: `log_checkpoint` with `passed: false`.
 ## MCP Server Dependencies
 
 - **audit-logger**: `log_interaction`, `log_checkpoint`, `log_event`
+- **finops-cost-estimator**: `calculate_workflow_cost`

@@ -30,24 +30,28 @@ At workflow start, load the following from `.kiro/aws-aidlc-rule-details/`:
 
 ## Workflow Steps
 
-1. **Create Restore Point** — Before making any changes, use git-rollback MCP: `create_restore_point` to snapshot the current state including lockfiles (`pom.xml`, `package-lock.json`, `requirements.txt`). Record the `restore_point_id` for potential rollback. Log via audit-logger MCP: `log_event`.
+1. **Start Workflow** — Generate a `workflow_id` using the pattern `wf3-{issue-key-or-short-description}` (e.g. `wf3-spring-boot-upgrade`). Log workflow start immediately via audit-logger MCP: `log_event` with `event_type: "workflow_start"`, including the target project path and upgrade scope in `details`. Record this `workflow_id` — it must be used consistently for every subsequent audit-logger and finops call in this workflow.
 
-2. **Scan Outdated Dependencies** — Use dependency-scanner MCP: `scan_outdated` to identify all outdated dependencies and available updates. Accept a `scope` parameter to filter by upgrade type:
+   **MANDATORY**: This MCP call MUST succeed before proceeding. Do NOT substitute writing to `aidlc-docs/audit.md`.
+
+2. **Create Restore Point** — Before making any changes, use git-rollback MCP: `create_restore_point` to snapshot the current state including lockfiles (`pom.xml`, `package-lock.json`, `requirements.txt`). Record the `restore_point_id` for potential rollback. Log via audit-logger MCP: `log_event`.
+
+3. **Scan Outdated Dependencies** — Use dependency-scanner MCP: `scan_outdated` to identify all outdated dependencies and available updates. Accept a `scope` parameter to filter by upgrade type:
    - `all` — scan all outdated dependencies
    - `security` — only dependencies with known CVEs
    - `major` — only major version upgrades
    - `minor` — only minor and patch version upgrades
    - Log scan results via audit-logger MCP: `log_interaction`
 
-3. **Check Compatibility** — For each outdated dependency, use dependency-scanner MCP: `check_compatibility` to assess breaking changes between the current and target versions. Use dependency-scanner MCP: `get_upgrade_plan` to generate an ordered upgrade plan respecting the dependency graph. Log compatibility results via audit-logger MCP: `log_interaction`.
+4. **Check Compatibility** — For each outdated dependency, use dependency-scanner MCP: `check_compatibility` to assess breaking changes between the current and target versions. Use dependency-scanner MCP: `get_upgrade_plan` to generate an ordered upgrade plan respecting the dependency graph. Log compatibility results via audit-logger MCP: `log_interaction`.
 
-4. **Generate Code Updates** — When breaking changes are detected, generate code modifications to resolve incompatibilities:
+5. **Generate Code Updates** — When breaking changes are detected, generate code modifications to resolve incompatibilities:
    - Update import statements and API calls for changed interfaces
    - Adjust configuration files for new dependency requirements
    - Update type definitions or signatures as needed
    - Log each code update via audit-logger MCP: `log_interaction`
 
-5. **Run Full Test Suite** — Execute the complete automated test suite against the updated dependencies:
+6. **Run Full Test Suite** — Execute the complete automated test suite against the updated dependencies:
    - Python: `pytest --cov --cov-fail-under=70`
    - Java: `mvn test` with JaCoCo coverage
    - Node JS: `npm test -- --coverage`
@@ -55,19 +59,19 @@ At workflow start, load the following from `.kiro/aws-aidlc-rule-details/`:
    - Verify all tests pass (zero failures)
    - Log result via audit-logger MCP: `log_checkpoint`
 
-6. **Security Scan** — Run security analysis on updated dependencies:
+7. **Security Scan** — Run security analysis on updated dependencies:
    - Use security-scanner MCP: `scan_dependencies` on the project
    - Verify no new HIGH or CRITICAL vulnerabilities introduced by upgrades
    - Log result via audit-logger MCP: `log_checkpoint`
 
-7. **Generate Documentation** — Invoke the shared `generate-documentation` skill to produce documentation artifacts for the dependency changes:
+8. **Generate Documentation** — Invoke the shared `generate-documentation` skill to produce documentation artifacts for the dependency changes:
    - Release notes (`docs/release-notes-{ISSUE_KEY}.md`) with upgraded dependency list
    - API changelog entry (append to `docs/CHANGELOG.md`) if API signatures changed
    - OpenAPI spec (`docs/openapi.yaml`) update if endpoint behavior changed
    - Architecture diagram (`docs/architecture.md`)
    - See `skill://.kiro/skills/shared-skills/generate-documentation/SKILL.md` for full details
 
-8. **Generate Delta Report** — Produce a comprehensive summary of all dependency changes:
+9. **Generate Delta Report** — Produce a comprehensive summary of all dependency changes:
    - Use `scripts/generate_delta_report.py` to compare before/after states
    - List each upgraded dependency with old and new version numbers
    - Document breaking changes detected and code modifications made
@@ -75,7 +79,13 @@ At workflow start, load the following from `.kiro/aws-aidlc-rule-details/`:
    - Include security scan comparison
    - Log report via audit-logger MCP: `log_event`
 
-9. **Audit Log** — Record the complete workflow execution summary via audit-logger MCP: `log_event` with event_type `workflow_end`, including all checkpoint results, delta report reference, restore point ID, and output artifacts.
+10. **Audit Log** — Record the complete workflow execution summary via audit-logger MCP: `log_event` with event_type `workflow_end`, including all checkpoint results, delta report reference, restore point ID, and output artifacts.
+
+    **MANDATORY**: This MCP call MUST succeed. Do NOT skip it or substitute writing to `aidlc-docs/audit.md`.
+
+11. **Cost Report** — After logging `workflow_end`, call finops-cost-estimator MCP: `calculate_workflow_cost` using the active `workflow_id`. Then log the cost result back to the audit trail via audit-logger MCP: `log_event` with `event_type: "cost_report"`. Include the full cost breakdown table in the final response to the user per the format defined in `finops-cost-reporting.md`.
+
+    **MANDATORY**: Both MCP calls MUST be made. Call `calculate_workflow_cost` even if the cost is zero.
 
 ## Checkpoints (MUST pass before proceeding)
 
@@ -126,3 +136,4 @@ See `references/compatibility-checks.md` for detailed compatibility verification
 - **git-rollback**: `create_restore_point`, `rollback`
 - **security-scanner**: `scan_dependencies`
 - **audit-logger**: `log_interaction`, `log_checkpoint`, `log_event`
+- **finops-cost-estimator**: `calculate_workflow_cost`

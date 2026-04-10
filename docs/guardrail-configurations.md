@@ -1,8 +1,8 @@
 # Guardrail Configurations
 
 **Project:** Autonomous AI SDLC Prototype
-**Version:** 1.0
-**Last Updated:** [Date]
+**Version:** 2.0
+**Last Updated:** 2026-04-09
 
 ---
 
@@ -21,6 +21,7 @@ This document describes the guardrails framework implemented via Kiro steering f
 | `security-rules.md` | Security enforcement | No hardcoded secrets, input validation, dependency scanning, SQL injection prevention |
 | `coding-standards.md` | Code quality | Review requirements, coverage thresholds, documentation standards, no dead code |
 | `sandbox-boundaries.md` | Isolation enforcement | No production access, no external URLs, no PII |
+| `finops-cost-reporting.md` | Cost reporting | Call `calculate_workflow_cost` after every workflow run, include cost table in final response |
 
 ### Language-Specific Steering (Applied by File Type)
 
@@ -85,3 +86,27 @@ Guardrails are configurable without code changes:
 | WF3 — Dependency Upgrades | 70% | Full suite post-upgrade |
 | WF4 — Bug Fix | 90% | Fix + regression tests |
 | WF5 — Documentation | N/A | No code coverage required |
+
+---
+
+## FinOps Cost Reporting
+
+The `finops-cost-reporting.md` steering file (always-on) instructs the agent to call `calculate_workflow_cost` from the finops-cost-estimator MCP server at the end of every workflow run.
+
+**Trigger:** After the `workflow_end` event is logged to audit-logger.
+
+**Output:** A formatted cost table included in the agent's final response, plus JSON and Markdown reports written to `reports/finops/`.
+
+**Cost model:** `config/finops-cost-model.yml` — unit prices and per-file scaling factors. Update this file to adjust pricing without code changes.
+
+**Dimensions tracked:**
+
+| Dimension | Unit |
+|-----------|------|
+| LLM Input Tokens | per 1K tokens |
+| LLM Output Tokens | per 1K tokens |
+| Compute Time | per second |
+| MCP Tool Calls | per invocation |
+| Checkpoints | per execution |
+
+This is best-effort — a cost reporting failure never blocks or delays the workflow response.

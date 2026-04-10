@@ -112,3 +112,50 @@ graph TD
 
 Keep Mermaid diagrams under 15 nodes. If the service has more components,
 split into multiple diagrams (e.g., one per domain area).
+
+
+## WF1 Summary Report Template
+
+```markdown
+# ✅ WF1 Complete — {FEATURE_SUMMARY}
+
+{Brief description of what was done: implemented, validated, or no changes needed.}
+
+## Checkpoint Results
+
+| Checkpoint | Status | Details |
+|---|---|---|
+| Code Review | ✅ PASSED / ❌ FAILED | {correctness, conventions, security findings} |
+| Security Scan | ✅ PASSED / ❌ FAILED | {N} code findings, {N} dependency vulnerabilities |
+| Test Coverage | ✅ PASSED / ❌ FAILED | {N}/{N} tests pass, {X}% coverage on new/modified code |
+
+## What Was Done
+
+{Description of the feature or change — endpoints added/modified, models created, logic implemented. Include request/response examples if REST endpoints are involved.}
+
+## Files
+
+{List each file created or modified with a brief description. If no changes were needed, note "no changes — all pre-existing".}
+
+- `path/to/file.py` — description of change
+- `tests/test_feature.py` — {N} tests
+
+## 💰 Workflow Cost Summary
+
+**Workflow:** {WORKFLOW_ID}
+**Token counting:** {recorded / estimated}
+
+| Dimension | Quantity | Unit Price | Cost |
+|---|---|---|---|
+| LLM Input Tokens | {N} tokens | $0.003 / 1K tokens | ${cost} |
+| LLM Output Tokens | {N} tokens | $0.015 / 1K tokens | ${cost} |
+| Compute Time | {Xm Ys} | $0.00005 / sec | ${cost} |
+| MCP Tool Calls | {N} | $0.0001 / call | ${cost} |
+| Checkpoints | {N} | $0.001 / checkpoint | ${cost} |
+| **Total** | | | **${total}** |
+```
+
+Place the summary report at `docs/wf1-summary-{ISSUE_KEY}.md` in the target service.
+This is the same structure the agent uses in its final chat response (steps 11–12).
+Populate all fields from checkpoint results, test output, security scan, and finops cost data.
+Use ✅ PASSED / ❌ FAILED for checkpoint status. If a section has no data, show `0` or `N/A`.

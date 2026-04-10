@@ -92,6 +92,7 @@ MCP_SERVERS=(
   "security-scanner"
   "dependency-scanner"
   "git-rollback"
+  "finops-cost-estimator"
 )
 
 for server in "${MCP_SERVERS[@]}"; do
@@ -141,10 +142,14 @@ MCP_CONFIG_FILE="$MCP_CONFIG_DIR/mcp.json"
 
 mkdir -p "$MCP_CONFIG_DIR"
 
+# Detect environment: CI (GitLab/GitHub) or local kiro-cli
+# In CI: use python3 stdio transport (no Docker needed inside K8s pods)
+# Locally: use Docker transport with resolved absolute paths
+# NOTE: ${workspaceFolder} in static mcp.json is an IDE-only variable — kiro-cli
+#       cannot resolve it. This script generates a resolved config at runtime.
+
 if [ -n "${CI:-}" ]; then
   # --- CI mode: stdio transport (Python direct) ---
-  # Jira/GitLab/Confluence MCP servers are Docker images that can't run in K8s pods.
-  # They are excluded here — the pipeline handles Jira/GitLab API calls directly.
   info "  CI environment detected — using stdio transport"
 
   cat > "$MCP_CONFIG_FILE" <<EOF
@@ -181,6 +186,18 @@ if [ -n "${CI:-}" ]; then
       },
       "disabled": false,
       "autoApprove": ["create_restore_point", "rollback", "verify_consistency", "list_restore_points"]
+    },
+    "finops-cost-estimator": {
+      "command": "python3",
+      "args": ["$PROJECT_ROOT/mcp-servers/finops-cost-estimator/server.py"],
+      "env": {
+        "AUDIT_LOG_PATH": "$PROJECT_ROOT/audit/audit.ndjson",
+        "COST_MODEL_PATH": "$PROJECT_ROOT/config/finops-cost-model.yml",
+        "REPORTS_DIR": "$PROJECT_ROOT/reports/finops",
+        "BASELINES_PATH": "$PROJECT_ROOT/reports/finops/baselines.json"
+      },
+      "disabled": false,
+      "autoApprove": ["estimate_workflow_cost", "calculate_workflow_cost", "get_cost_report", "get_historical_baseline"]
     }
   }
 }
@@ -224,6 +241,28 @@ else
       },
       "disabled": false,
       "autoApprove": ["create_restore_point", "rollback", "verify_consistency", "list_restore_points"]
+    },
+    "finops-cost-estimator": {
+      "command": "docker",
+      "args": [
+        "run", "--init", "--rm", "-i",
+        "-e", "AUDIT_LOG_PATH",
+        "-e", "COST_MODEL_PATH",
+        "-e", "REPORTS_DIR",
+        "-e", "BASELINES_PATH",
+        "-v", "$PROJECT_ROOT/audit:/audit:ro",
+        "-v", "$PROJECT_ROOT/config:/config:ro",
+        "-v", "$PROJECT_ROOT/reports:/reports",
+        "$ECR_REGISTRY/genai-finops-cost-estimator-mcp-server:latest"
+      ],
+      "env": {
+        "AUDIT_LOG_PATH": "/audit/audit.ndjson",
+        "COST_MODEL_PATH": "/config/finops-cost-model.yml",
+        "REPORTS_DIR": "/reports/finops",
+        "BASELINES_PATH": "/reports/finops/baselines.json"
+      },
+      "disabled": false,
+      "autoApprove": ["estimate_workflow_cost", "calculate_workflow_cost", "get_cost_report", "get_historical_baseline"]
     }
   }
 }
@@ -233,7 +272,98 @@ fi
 
 info "  ✓ Generated $MCP_CONFIG_FILE"
 info "    Project root: $PROJECT_ROOT"
+info "    Transport:    $([ -n "${CI:-}" ] && echo 'stdio (python3)' || echo 'Docker')"
+info "    Agent:        developer (--agent developer)"
 echo ""
+
+# ---------------------------------------------------------------------------
+# 5. Patch agent configs for CI
+#
+# The developer.json and devops.json agent configs define mcpServers using
+# Docker transport (confluence, gitlab, jira). These cannot run in EKS pods
+# (no Docker-in-Docker). In CI mode, disable Docker-only servers so kiro-cli
+# doesn't try to start them. The agent's useLegacyMcpJson=true means it
+# falls back to .kiro/settings/mcp.json (generated above with stdio transport)
+# for audit-logger, security-scanner, git-rollback, finops-cost-estimator.
+# ---------------------------------------------------------------------------
+if [ -n "${CI:-}" ]; then
+  info "=== Step 5: Patching Agent Configs for CI (no Docker-in-Docker) ==="
+
+  KIRO_AGENTS_DIR="$PROJECT_ROOT/.kiro/agents"
+  for agent_file in "$KIRO_AGENTS_DIR"/*.json; do
+    [ -f "$agent_file" ] || continue
+    agent_name=$(basename "$agent_file")
+
+    # In CI: disable Docker-only servers (confluence, gitlab, jira).
+    # Keep useLegacyMcpJson=true so kiro-cli reads .kiro/settings/mcp.json
+    # (generated in Step 4 with stdio transport and resolved paths).
+    python3 -c "
+import json, sys
+
+with open('$agent_file') as f:
+    agent = json.load(f)
+
+mcp = agent.get('mcpServers', {})
+patched = []
+
+# Disable Docker-only servers
+docker_only = ['confluence', 'gitlab', 'jira']
+for name in docker_only:
+    if name in mcp:
+        mcp[name]['disabled'] = True
+        patched.append(f'disabled:{name}')
+
+# Ensure useLegacyMcpJson stays true so .kiro/settings/mcp.json is used
+agent['useLegacyMcpJson'] = True
+
+with open('$agent_file', 'w') as f:
+    json.dump(agent, f, indent=2)
+print(f'  ✓ {\"$agent_name\"}: {patched} (useLegacyMcpJson=true)')
+"
+  done
+
+  # Also patch agents/ directory (legacy location) if it exists
+  LEGACY_AGENTS_DIR="$PROJECT_ROOT/agents"
+  if [ -d "$LEGACY_AGENTS_DIR" ]; then
+    for agent_file in "$LEGACY_AGENTS_DIR"/*.json; do
+      [ -f "$agent_file" ] || continue
+      agent_name=$(basename "$agent_file")
+      python3 -c "
+import json
+with open('$agent_file') as f:
+    agent = json.load(f)
+docker_only = ['confluence', 'gitlab', 'jira']
+mcp = agent.get('mcpServers', {})
+patched = []
+for name in docker_only:
+    if name in mcp:
+        mcp[name]['disabled'] = True
+        patched.append(name)
+if patched:
+    with open('$agent_file', 'w') as f:
+        json.dump(agent, f, indent=2)
+    print(f'  ✓ {\"$agent_name\"} (legacy): disabled {patched}')
+"
+    done
+  fi
+  echo ""
+fi
+
+# ---------------------------------------------------------------------------
+# Local kiro-cli usage reminder
+# ---------------------------------------------------------------------------
+if [ -z "${CI:-}" ]; then
+  info "=== Local kiro-cli Usage ==="
+  info "  MCP config has been generated with resolved absolute paths."
+  info "  Run this script once before each kiro-cli session:"
+  info ""
+  info "    bash scripts/setup-kiro.sh && kiro-cli chat --agent developer ..."
+  info ""
+  info "  NOTE: The committed .kiro/settings/mcp.json uses \${workspaceFolder}"
+  info "  which only works in Kiro IDE. kiro-cli REQUIRES this script to"
+  info "  generate a config with resolved absolute paths."
+  echo ""
+fi
 
 # ---------------------------------------------------------------------------
 # Summary

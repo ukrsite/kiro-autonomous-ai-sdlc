@@ -1,7 +1,3 @@
----
-inclusion: manual
----
-
 # Merge Policy
 
 ## Merge Prerequisites

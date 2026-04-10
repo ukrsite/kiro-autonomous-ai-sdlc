@@ -84,10 +84,10 @@
       ]
     },
     "audit-logger": {
-      "command": "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/.venv/bin/python",
-      "args": ["/home/zstakos/vscode/kiro-autonomous-ai-sdlc/mcp-servers/audit-logger/server.py"],
+      "command": "docker",
+      "args": ["run", "--init", "--rm", "-i", "-e", "AUDIT_LOG_PATH", "-v", "${workspaceFolder}/audit:/audit", "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-audit-logger-mcp-server:latest"],
       "env": {
-        "AUDIT_LOG_PATH": "audit/audit.ndjson"
+        "AUDIT_LOG_PATH": "/audit/audit.ndjson"
       }
     }
   },

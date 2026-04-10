@@ -30,7 +30,11 @@ At workflow start, load the following from `.kiro/aws-aidlc-rule-details/`:
 
 ## Workflow Steps
 
-1. **Root Cause Analysis** — Accept a bug report or failing test reference and target module path as input. Investigate the defect by:
+1. **Start Workflow** — Generate a `workflow_id` using the pattern `wf4-{issue-key-or-short-description}` (e.g. `wf4-login-null-pointer`). Log workflow start immediately via audit-logger MCP: `log_event` with `event_type: "workflow_start"`, including the bug report and target module in `details`. Record this `workflow_id` — it must be used consistently for every subsequent audit-logger and finops call in this workflow.
+
+   **MANDATORY**: This MCP call MUST succeed before proceeding. Do NOT substitute writing to `aidlc-docs/audit.md`.
+
+2. **Root Cause Analysis** — Accept a bug report or failing test reference and target module path as input. Investigate the defect by:
    - Reproducing the bug or confirming the failing test
    - Tracing execution paths to identify the source of the defect
    - Analyzing stack traces, error messages, and relevant code paths
@@ -39,16 +43,16 @@ At workflow start, load the following from `.kiro/aws-aidlc-rule-details/`:
    - Log the analysis via audit-logger MCP: `log_interaction`
    - See `references/root-cause-analysis.md` for detailed methodology
 
-2. **Create Restore Point** — Before making any changes, use git-rollback MCP: `create_restore_point` to snapshot the current state. Record the `restore_point_id` for potential rollback. Log via audit-logger MCP: `log_event`.
+3. **Create Restore Point** — Before making any changes, use git-rollback MCP: `create_restore_point` to snapshot the current state. Record the `restore_point_id` for potential rollback. Log via audit-logger MCP: `log_event`.
 
-3. **Generate Fix** — Produce a code fix addressing the identified root cause:
+4. **Generate Fix** — Produce a code fix addressing the identified root cause:
    - Apply the minimal change necessary to resolve the defect
    - Preserve existing behavior for all non-buggy code paths
    - Follow language-specific coding standards and project conventions
    - Add inline comments explaining the fix rationale where appropriate
    - Log the fix via audit-logger MCP: `log_interaction`
 
-4. **Generate Regression Tests** — Create tests that verify the fix and prevent recurrence:
+5. **Generate Regression Tests** — Create tests that verify the fix and prevent recurrence:
    - Write test(s) that reproduce the original bug (must fail without the fix)
    - Write test(s) that verify the fix resolves the defect (must pass with the fix)
    - Write test(s) covering edge cases related to the root cause
@@ -56,7 +60,7 @@ At workflow start, load the following from `.kiro/aws-aidlc-rule-details/`:
    - Python: pytest, Java: JUnit 5, Node JS: Jest
    - Log test creation via audit-logger MCP: `log_interaction`
 
-5. **Run Full Test Suite** — Execute all tests (existing + new regression tests) against the fixed code:
+6. **Run Full Test Suite** — Execute all tests (existing + new regression tests) against the fixed code:
    - Python: `pytest --cov --cov-fail-under=90`
    - Java: `mvn test` with JaCoCo coverage (90% minimum)
    - Node JS: `npm test -- --coverage` (90% minimum)
@@ -65,7 +69,7 @@ At workflow start, load the following from `.kiro/aws-aidlc-rule-details/`:
    - Verify minimum 90% line coverage on fix and regression tests
    - Log result via audit-logger MCP: `log_checkpoint`
 
-6. **Side-Effect Analysis** — Verify the fix does not introduce new defects:
+7. **Side-Effect Analysis** — Verify the fix does not introduce new defects:
    - Identify all callers and dependents of the modified code
    - Run integration tests covering affected code paths
    - Check for changes in error handling, return types, or API contracts
@@ -73,12 +77,12 @@ At workflow start, load the following from `.kiro/aws-aidlc-rule-details/`:
    - Run the validation script: `scripts/validate_fix.py`
    - Log result via audit-logger MCP: `log_checkpoint`
 
-7. **Security Scan** — Run security analysis on all modified files:
+8. **Security Scan** — Run security analysis on all modified files:
    - Use security-scanner MCP: `scan_code` on all modified files
    - Verify no new HIGH or CRITICAL vulnerabilities introduced by the fix
    - Log result via audit-logger MCP: `log_checkpoint`
 
-8. **Fix Validation Checkpoint** — Final validation gate before accepting the fix:
+9. **Fix Validation Checkpoint** — Final validation gate before accepting the fix:
    - All existing tests pass (zero regressions)
    - All regression tests pass
    - Test coverage meets 90% minimum on fix and regression tests
@@ -88,14 +92,20 @@ At workflow start, load the following from `.kiro/aws-aidlc-rule-details/`:
    - If validation fails, HALT and report failure
    - Log result via audit-logger MCP: `log_checkpoint`
 
-9. **Generate Documentation** — Invoke the shared `generate-documentation` skill to produce documentation artifacts for the bug fix:
+10. **Generate Documentation** — Invoke the shared `generate-documentation` skill to produce documentation artifacts for the bug fix:
    - Release notes (`docs/release-notes-{ISSUE_KEY}.md`) with root cause summary and fix description
    - API changelog entry (append to `docs/CHANGELOG.md`) if endpoint behavior changed
    - OpenAPI spec (`docs/openapi.yaml`) update if response codes or schemas changed
    - Architecture diagram (`docs/architecture.md`)
    - See `skill://.kiro/skills/shared-skills/generate-documentation/SKILL.md` for full details
 
-10. **Audit Log** — Record the complete workflow execution summary via audit-logger MCP: `log_event` with event_type `workflow_end`, including root cause analysis, fix description, regression test results, side-effect analysis, all checkpoint results, and output artifacts.
+11. **Audit Log** — Record the complete workflow execution summary via audit-logger MCP: `log_event` with event_type `workflow_end`, including root cause analysis, fix description, regression test results, side-effect analysis, all checkpoint results, and output artifacts.
+
+    **MANDATORY**: This MCP call MUST succeed. Do NOT skip it or substitute writing to `aidlc-docs/audit.md`.
+
+12. **Cost Report** — After logging `workflow_end`, call finops-cost-estimator MCP: `calculate_workflow_cost` using the active `workflow_id`. Then log the cost result back to the audit trail via audit-logger MCP: `log_event` with `event_type: "cost_report"`. Include the full cost breakdown table in the final response to the user per the format defined in `finops-cost-reporting.md`.
+
+    **MANDATORY**: Both MCP calls MUST be made. Call `calculate_workflow_cost` even if the cost is zero.
 
 ## Checkpoints (MUST pass before proceeding)
 
@@ -136,3 +146,4 @@ Log the failure via audit-logger MCP: `log_checkpoint` with `passed: false`.
 - **audit-logger**: `log_interaction`, `log_checkpoint`, `log_event`
 - **security-scanner**: `scan_code`
 - **git-rollback**: `create_restore_point`, `rollback`
+- **finops-cost-estimator**: `calculate_workflow_cost`

@@ -43,6 +43,9 @@ yarn.lock
 logs/
 *.ndjson
 
+# Large media files
+*.mp4
+
 # Temporary files
 *.tmp
 *.temp

@@ -1,6 +1,6 @@
 # Architecture — Autonomous AI Software Development Lifecycle
 
-> **Status:** Live | **Last Updated:** 2026-03-31 | **Owner:** GenAI Innovation Team
+> **Status:** Live | **Last Updated:** 2026-04-09 | **Owner:** GenAI Innovation Team
 
 This system transforms natural language requirements (Jira tickets) into working, tested, documented code — delivered as merge requests — with full audit trails and safety guardrails.
 
@@ -8,6 +8,7 @@ The architecture uses [Kiro](https://kiro.dev) native primitives (Skills, Steeri
 
 > **Key URLs:**
 > - Jira: [https://test.genai-innovation.ericsson.net/jira-ai-dlc/](https://test.genai-innovation.ericsson.net/jira-ai-dlc/)
+> - Data Processor — Swagger UI: [https://test.genai-innovation.ericsson.net/python-processor/docs](https://test.genai-innovation.ericsson.net/python-processor/docs)
 > - Orchestration Repo: [kiro-autonomous-ai-sdlc](https://gitlab.internal.ericsson.com/san-tools-technology-platform/genai-innovation/ai-streams/developer/kiro-autonomous-ai-sdlc)
 > - Sandbox Repo: [kiro-sandbox](https://gitlab.internal.ericsson.com/san-tools-technology-platform/genai-innovation/ai-streams/developer/kiro-sandbox)
 
@@ -52,6 +53,29 @@ graph TB
     style SHARED fill:#fff9c4,stroke:#f57f17,stroke-width:2px
 ```
 
+### 1.1 End-to-End Delivery: Jira → Code → EKS
+
+Once the AI generates code and the MR is merged, a per-service CI pipeline in `kiro-sandbox` takes over:
+
+```
+Jira Issue → AI-DLC (kiro-cli) → MR → merge to main
+  → semantic-release (version tag)
+  → Kaniko (container image → Artifactory → ECR)
+  → Helm chart (package → ECR OCI registry)
+  → GitOps (ArgoCD/Flux detects new chart → deploys to EKS)
+```
+
+| Stage | What happens |
+|---|---|
+| AI-DLC pipeline | Jira → validate → execute-workflow → checkpoint-gates → finalize → MR |
+| Merge to main | Triggers per-service `.gitlab-ci.yml` in kiro-sandbox |
+| semantic-release | Computes next semver, creates Git tag, publishes GitLab release |
+| Kaniko build | Builds container image, pushes to Artifactory + AWS ECR |
+| Helm publish | Packages chart, pushes to ECR OCI Helm registry |
+| GitOps deploy | ArgoCD/Flux detects new chart version in ECR, deploys to AWS EKS |
+
+The python-processor service is live at [https://test.genai-innovation.ericsson.net/python-processor/docs](https://test.genai-innovation.ericsson.net/python-processor/docs) — deployed automatically via this pipeline.
+
 ---
 
 ## 2. Architecture
@@ -71,7 +95,7 @@ graph TB
         STEERING2[".kiro/steering/ — security, coding standards, sandbox"]
         RULES2[".kiro/aws-aidlc-rule-details/ — common, construction, inception"]
         AGENTS2["agents/ — developer.json, devops.json"]
-        MCP2["mcp-servers/ — audit-logger, security-scanner, dependency-scanner, git-rollback"]
+        MCP2["mcp-servers/ — audit-logger, security-scanner, dependency-scanner, git-rollback, finops-cost-estimator"]
         PIPELINE2[".gitlab-ci-workflow.yml"]
     end
 
@@ -130,6 +154,7 @@ graph TB
         SS["security-scanner — bandit + safety"]
         DS["dependency-scanner — outdated + CVE"]
         GR["git-rollback — restore points"]
+        FC["finops-cost-estimator — per-run cost tracking"]
     end
 
     subgraph SANDBOX3["kiro-sandbox"]
@@ -240,6 +265,107 @@ flowchart LR
     style SEC fill:#fff9c4,stroke:#f57f17
 ```
 
+### 4.2.1 Example: WF1 Flow for Adding a New Endpoint
+
+Paste something like this into Kiro CLI:
+
+> Using AI-DLC, as a Product Owner I want to add a new REST API endpoint GET /api/v1/health/detailed to the python-processor service in the kiro-sandbox repository (../kiro-sandbox/services/python-processor). The endpoint should return a JSON response with service name, version, uptime, and current timestamp.
+
+**INCEPTION PHASE:**
+
+1. **Workspace Detection** — scans `../kiro-sandbox/services/python-processor`, detects brownfield Python/FastAPI project
+2. **Reverse Engineering** (if first time) — catalogs existing routes, models, dependencies
+3. **Requirements Analysis** — asks clarifying questions:
+   - Should the endpoint require authentication?
+   - What HTTP status codes should it return?
+   - Should uptime be calculated from process start or deployment time?
+4. **Workflow Planning** — classifies as WF1 (new feature), presents execution plan for approval
+5. **Handoff Artifact** — generates `workflow-handoff.md` consumed by WF1
+
+**CONSTRUCTION PHASE (WF1):**
+
+6. **Functional Design** — defines the response schema:
+
+```json
+{
+  "service": "python-processor",
+  "version": "1.2.0",
+  "uptime_seconds": 3842,
+  "timestamp": "2026-04-09T15:38:43Z"
+}
+```
+
+7. **Code Generation** — produces minimal code:
+
+```python
+# routers/health.py
+import time
+from datetime import datetime, timezone
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/api/v1/health", tags=["health"])
+_start_time = time.monotonic()
+
+@router.get("/detailed")
+async def detailed_health():
+    return {
+        "service": "python-processor",
+        "version": "1.2.0",
+        "uptime_seconds": round(time.monotonic() - _start_time),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+```
+
+```python
+# test_health.py
+from fastapi.testclient import TestClient
+from main import app
+
+client = TestClient(app)
+
+def test_detailed_health():
+    resp = client.get("/api/v1/health/detailed")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["service"] == "python-processor"
+    assert "uptime_seconds" in body
+    assert "timestamp" in body
+```
+
+8. **Checkpoint Gates** (all must pass before merge):
+
+| Checkpoint | What runs | Pass criteria |
+|---|---|---|
+| Code Review | AI reviews correctness, conventions, dead code | No blocking issues |
+| Security Scan | `scan_code` + `scan_dependencies` via MCP | No HIGH/CRITICAL findings |
+| Test Coverage | `pytest --cov` on changed files | ≥80% line coverage |
+
+9. **Generate Documentation** — 5 mandatory artifacts:
+   - `docs/release-notes-{ISSUE_KEY}.md`
+   - `docs/CHANGELOG.md`
+   - `docs/openapi.yaml`
+   - `docs/architecture.md`
+   - `docs/wf1-summary-{ISSUE_KEY}.md`
+
+10. **Merge** — if all checkpoints pass, code is merged to the target branch
+
+**Cost Report** — automatic at the end:
+
+```
+## 💰 Workflow Cost Summary
+
+Workflow: wf1-requirement-to-software
+
+| Dimension         | Quantity      | Unit Price          | Cost       |
+|-------------------|---------------|---------------------|------------|
+| LLM Input Tokens  | ~50K tokens   | $0.003 / 1K tokens  | ~$0.15     |
+| LLM Output Tokens | ~20K tokens   | $0.015 / 1K tokens  | ~$0.30     |
+| Compute Time      | ~7m           | $0.00005 / sec      | ~$0.02     |
+| MCP Tool Calls    | ~15           | $0.0001 / call      | ~$0.002    |
+| Checkpoints       | 3             | $0.001 / checkpoint | ~$0.003    |
+| Total             |               |                     | ~$0.50     |
+```
+
 ### 4.3 Checkpoint Gates
 
 All checkpoints must pass before merge:
@@ -271,6 +397,7 @@ flowchart LR
         subgraph GATES["checkpoint-gates (parallel)"]
             JT3["java-tests"]
             PT3["python-tests"]
+            NT3["node-tests"]
             SS3["security-scan"]
             RV3["review"]
         end
@@ -294,7 +421,8 @@ flowchart LR
 | **validate** | kiro-ci | Resolve Jira project → service → workflow → coverage threshold |
 | **execute-workflow** | kiro-ci | Clone kiro-sandbox, `cd sandbox`, run AI-DLC via kiro-cli |
 | **java-tests** | maven:3.9-eclipse-temurin-21 | `mvn verify` + JaCoCo coverage |
-| **python-tests** | python:3.12-slim | `pytest --cov` with per-file coverage |
+| **python-tests** | python:3.12-slim | `pytest --cov` with per-service coverage (multi-service aware) |
+| **node-tests** | node:18 | `npm test` + Jest coverage (skips if no `package.json`) |
 | **security-scan** | python:3.12-slim | `bandit` + `safety` (blocks on HIGH/CRITICAL) |
 | **review** | kiro-ci | AI-assisted code review via kiro-cli |
 | **finalize** | kiro-ci | Push branch, create MR, transition Jira |
@@ -327,7 +455,7 @@ sequenceDiagram
 
 | Layer | Mechanism | Detail |
 |---|---|---|
-| kiro-cli | `retry-wrapper.sh` | 3 retries, exponential backoff |
+| kiro-cli | `retry-wrapper.sh` | 5 retries, exponential backoff (15s→300s cap), rate-limit detection (60s cooldown) |
 | GitLab job | `retry: max: 2` | Runner crashes, network timeouts |
 | MR creation | HTTP 409 handler | Fetches existing MR URL |
 | Rollback | `git-rollback` MCP | Restore point before implementation |
@@ -376,6 +504,7 @@ graph TB
 | **security-rules.md** | Always | No hardcoded secrets, input validation, dependency scanning |
 | **coding-standards.md** | Always | Code review, coverage thresholds, documentation standards |
 | **sandbox-boundaries.md** | Always | No production access, sandbox-only resources |
+| **finops-cost-reporting.md** | Always | Mandatory cost reporting at end of every workflow run |
 | **java-guardrails.md** | fileMatch `*.java` | Java/Spring conventions |
 | **python-guardrails.md** | fileMatch `*.py` | Python/FastAPI conventions |
 | **nodejs-guardrails.md** | fileMatch `*.js`, `*.ts` | Node.js/TypeScript conventions |
@@ -428,8 +557,9 @@ flowchart TD
 | **security-scanner** | Static analysis + dependency CVE scanning | `scan_code`, `scan_dependencies`, `get_scan_report` |
 | **dependency-scanner** | Outdated dependency detection | `scan_outdated`, `check_compatibility`, `get_upgrade_plan` |
 | **git-rollback** | Git restore points and safe rollback | `create_restore_point`, `rollback`, `verify_consistency` |
+| **finops-cost-estimator** | Per-run cost estimation and reporting | `estimate_workflow_cost`, `calculate_workflow_cost`, `get_cost_report`, `get_historical_baseline` |
 
-All servers run via stdio transport. In CI: Python runtime in kiro-ci image. Locally: project virtual environment.
+All servers run via stdio transport. In CI: Python runtime in kiro-ci image. Locally: Docker containers from ECR (generated by `setup-kiro.sh`).
 
 ---
 
@@ -448,6 +578,24 @@ All servers run via stdio transport. In CI: Python runtime in kiro-ci image. Loc
 
 ---
 
+## 9.5 FinOps Cost Reporting
+
+At the end of every workflow run, the agent calls `calculate_workflow_cost` and includes a cost breakdown in its final response. Costs are tracked across five dimensions:
+
+| Dimension | Unit Price | Source |
+|---|---|---|
+| LLM Input Tokens | $0.003 / 1K tokens | Kiro-cli log parsing or compute-time estimation |
+| LLM Output Tokens | $0.015 / 1K tokens | Kiro-cli log parsing or compute-time estimation |
+| Compute Time | $0.00005 / sec | workflow_start → workflow_end timestamps |
+| MCP Tool Calls | $0.0001 / call | tool_invocation events in audit log |
+| Checkpoints | $0.001 / checkpoint | checkpoint records in audit log |
+
+Unit prices are configured in `config/finops-cost-model.yml`. Reports are written to `reports/finops/` as JSON and Markdown. Historical baselines are maintained per workflow type to improve estimate accuracy over time.
+
+Token estimation priority: (1) kiro-cli trace log (actual API counts), (2) manual injection, (3) compute-time estimation (duration × 40 tok/s).
+
+---
+
 ## 10. Service Configuration
 
 ```yaml
@@ -455,7 +603,7 @@ All servers run via stdio transport. In CI: Python runtime in kiro-ci image. Loc
 sandbox_repo: https://gitlab.internal.ericsson.com/.../kiro-sandbox.git
 
 defaults:
-  workflow: wf1-requirement-to-software
+  workflow: auto  # AI-DLC classifier selects WF at runtime
   agent: developer
   trigger_status: "Ready for AI Dev"
 
@@ -472,9 +620,12 @@ projects:
       node-gateway:
         repo_path: services/node-gateway
         target_branch: main
+      all-services:
+        repo_path: services
+        target_branch: main
 ```
 
-Set `SERVICE_NAME` custom field on the Jira issue. Falls back to `default_service` if empty.
+Set `SERVICE_NAME` custom field on the Jira issue. Falls back to `default_service` if empty. Use `all-services` to inspect and update all services in a single run.
 
 ---
 
@@ -498,9 +649,29 @@ Multi-service demo application in `kiro-sandbox`:
 
 | Service | Stack | Port | Purpose |
 |---|---|---|---|
-| **java-api** | Spring Boot 3.2.3 / Java 21 / H2 | 8088 | User CRUD REST API |
+| **java-api** | Spring Boot 3.2.3 / Java 21 / H2 | 8080 | User CRUD REST API |
 | **python-processor** | FastAPI / Python 3.12 | 5000 | Data processing and reports |
-| **node-gateway** | Express / Node 20 | 3000 | API gateway |
+| **node-gateway** | Express / Node 20 | 3000 | API gateway (proxies to java-api and python-processor) |
+| **Swagger UI** | swagger-ui aggregator | 8888 | Aggregated API docs for all services |
+
+### Running Locally
+
+```bash
+cd kiro-sandbox
+docker compose up --build
+```
+
+| Endpoint | URL |
+|---|---|
+| Gateway health | `http://localhost:3000/health` |
+| Gateway API docs | `http://localhost:3000/api-docs` |
+| Aggregated docs | `http://localhost:8888` |
+| Service config (all services) | `GET /api/config` |
+| Runtime log level | `PUT /api/config/log-level` |
+
+### Deploying via CI
+
+Each service has its own `.gitlab-ci.yml` triggered by changes in its directory. On push to `main`, semantic-release computes the next semver, Kaniko builds the container image, and Helm charts are pushed to ECR. Non-main branches produce hash-tagged pre-release builds.
 
 ---
 
@@ -508,6 +679,7 @@ Multi-service demo application in `kiro-sandbox`:
 
 | Variable | Description |
 |---|---|
+| `KIRO_AUTH_DB` | Base64-encoded kiro-cli auth DB (extracted via `scripts/extract-kiro-auth.sh`) |
 | `GL_TOKEN` | GitLab token with `api`, `read_repository`, `write_repository` on kiro-sandbox |
 | `JIRA_ETEAM_TOKEN` | Jira PAT for REST API (transitions, comments) |
 | `PIPELINE_TRIGGER_TOKEN` | GitLab pipeline trigger token (Jira Automation) |

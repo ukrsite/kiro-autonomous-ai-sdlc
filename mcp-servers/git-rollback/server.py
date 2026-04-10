@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -297,6 +298,16 @@ def _get_tag_metadata(tag_name: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _log_tool_call(tool_name: str, workflow_id: str = "", details: str = "") -> None:
+    """Print a structured log line to stderr for CI visibility."""
+    timestamp = _now_iso()
+    print(
+        f"[git-rollback] {timestamp} tool={tool_name} workflow={workflow_id} {details}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 @mcp.tool()
 def create_restore_point(workflow_id: str, description: str) -> dict:
     """Tag the current commit as a restore point and snapshot lockfiles.
@@ -324,6 +335,7 @@ def create_restore_point(workflow_id: str, description: str) -> dict:
     commit_hash = _get_current_commit_hash()
 
     if not commit_hash:
+        _log_tool_call("create_restore_point", workflow_id, "error=no_commits")
         return {"error": "No commits found in the repository."}
 
     # Snapshot lockfiles
@@ -344,8 +356,10 @@ def create_restore_point(workflow_id: str, description: str) -> dict:
     tag_created = _create_tag(tag_name, tag_message)
 
     if not tag_created:
+        _log_tool_call("create_restore_point", workflow_id, f"error=tag_failed tag={tag_name}")
         return {"error": f"Failed to create Git tag: {tag_name}"}
 
+    _log_tool_call("create_restore_point", workflow_id, f"commit={commit_hash[:8]} id={restore_point_id}")
     return {
         "restore_point_id": restore_point_id,
         "git_commit_hash": commit_hash,
@@ -405,6 +419,7 @@ def rollback(restore_point_id: str, reason: str, initiator: str) -> dict:
         f"Reason: {reason}. Initiator: {initiator}."
     )
 
+    _log_tool_call("rollback", metadata.get("workflow_id", ""), f"commit={commit_hash[:8]} id={restore_point_id}")
     return {"success": True, "details": details}
 
 
@@ -432,6 +447,7 @@ def verify_consistency(test_command: Optional[str] = None) -> dict:
     cmd = test_command or "pytest"
     results = _run_test_suite(cmd)
 
+    _log_tool_call("verify_consistency", "", f"tests_run={results['tests_run']} failed={results['tests_failed']}")
     return {
         "consistent": results["tests_failed"] == 0 and results["tests_run"] > 0,
         "tests_run": results["tests_run"],
@@ -482,6 +498,7 @@ def list_restore_points() -> list[dict]:
     # Sort by timestamp, most recent first
     restore_points.sort(key=lambda rp: rp.get("timestamp", ""), reverse=True)
 
+    _log_tool_call("list_restore_points", "", f"count={len(restore_points)}")
     return restore_points
 
 

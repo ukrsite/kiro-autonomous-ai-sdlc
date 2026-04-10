@@ -7,6 +7,7 @@ Exposes tools for logging AI interactions, checkpoints, events, and querying aud
 import hashlib
 import json
 import os
+import sys
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -84,6 +85,16 @@ def _append_record(record_type: str, workflow_id: str, initiator: str, payload: 
 
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
+            f.flush()
+
+        # Emit a tool_invocation event so finops can count MCP calls
+        tool_name = payload.get("event_type") or record_type
+        print(
+            f"[audit-logger] {timestamp} type={record_type} workflow={workflow_id} "
+            f"initiator={initiator} tool={tool_name} id={record_id}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     return {"id": record_id, "content_hash": content_hash}
 
@@ -245,6 +256,68 @@ def query_audit(
         results.append(record)
 
     return results
+
+
+@mcp.tool()
+def verify_audit_log() -> dict:
+    """Verify the audit log is intact and print a summary to stdout.
+
+    Reads audit/audit.ndjson, validates the hash chain, and returns a
+    summary of record counts by type. Prints the summary so it appears
+    in CI job logs.
+
+    Returns:
+        Dict with record counts, chain validity, and last workflow_id.
+    """
+    log_path = Path(AUDIT_LOG_PATH)
+    if not log_path.exists() or log_path.stat().st_size == 0:
+        summary = {"status": "empty", "records": 0}
+        print(f"[audit-logger] audit log is empty at {AUDIT_LOG_PATH}", file=sys.stderr, flush=True)
+        return summary
+
+    records = []
+    with open(log_path, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped:
+                try:
+                    records.append(json.loads(stripped))
+                except json.JSONDecodeError:
+                    pass
+
+    counts: dict = {"interaction": 0, "checkpoint": 0, "event": 0}
+    chain_valid = True
+    prev_hash = ""
+    last_workflow_id = ""
+
+    for rec in records:
+        rec_type = rec.get("type", "unknown")
+        if rec_type in counts:
+            counts[rec_type] += 1
+        last_workflow_id = rec.get("workflow_id", last_workflow_id)
+        # Validate hash chain
+        if prev_hash and rec.get("previous_hash") != prev_hash:
+            chain_valid = False
+        prev_hash = rec.get("content_hash", "")
+
+    summary = {
+        "status": "ok" if chain_valid else "chain_broken",
+        "records": len(records),
+        "by_type": counts,
+        "chain_valid": chain_valid,
+        "last_workflow_id": last_workflow_id,
+        "log_path": str(log_path),
+    }
+
+    print(
+        f"[audit-logger] log={log_path} records={len(records)} "
+        f"interactions={counts['interaction']} checkpoints={counts['checkpoint']} "
+        f"events={counts['event']} chain_valid={chain_valid} "
+        f"last_workflow={last_workflow_id}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return summary
 
 
 if __name__ == "__main__":

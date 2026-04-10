@@ -37,3 +37,6 @@ projects:
       python-processor:
         repo_path: services/python-processor
         target_branch: main
+      all-services:
+        repo_path: services
+        target_branch: main

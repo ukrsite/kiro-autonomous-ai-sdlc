@@ -1,14 +1,14 @@
 # AI-DLC and WF1–WF5 Integration
 
 **Project:** Autonomous AI SDLC Prototype  
-**Version:** 1.0  
-**Last Updated:** 2026-03-29
+**Version:** 2.0  
+**Last Updated:** 2026-04-09
 
 ---
 
 ## Overview
 
-AI-DLC (AI-Driven Development Life Cycle) is a three-phase adaptive methodology that governs the full software development lifecycle. It does not implement code itself — instead, it plans, classifies, and hands off to one of five specialized Construction workflows (WF1–WF5). This document explains how the two layers connect.
+AI-DLC (AI-Driven Development Life Cycle) is a three-phase adaptive methodology that governs the full software development lifecycle. It does not implement code itself — instead, it plans, classifies, and hands off to one of five specialized Construction workflows (WF1–WF5). This document explains how the two layersV connect.
 
 ```
 User Request
@@ -90,7 +90,7 @@ Workflow Planning classifies the request and selects a WF based on intent:
 | Bug fix | WF4 — Bug Fix |
 | Documentation | WF5 — Documentation |
 
-The user sees the classification and can override it before CONSTRUCTION begins.
+The default workflow is `auto` — the AI-DLC classifier selects the WF at runtime based on the request. The user sees the classification and can override it before CONSTRUCTION begins. In CI, the prompt includes override signals: "refactor/refactoring → WF2, upgrade/dependency → WF3, bug/fix/crash → WF4, document/docs → WF5".
 
 ---
 
@@ -110,9 +110,17 @@ WF1 is the most comprehensive workflow. It maps directly to Kiro's spec-driven d
 5. Code Review checkpoint
 6. Test Coverage checkpoint (≥80%)
 7. Security Scan checkpoint
-8. Generate documentation artifacts (release notes, changelog, OpenAPI spec, architecture diagram)
+8. Generate documentation artifacts — 5 mandatory per service:
+   - `docs/release-notes-{ISSUE_KEY}.md`
+   - `docs/CHANGELOG.md` (append)
+   - `docs/openapi.yaml` (if REST endpoints)
+   - `docs/architecture.md`
+   - `docs/wf1-summary-{ISSUE_KEY}.md` (summary report with checkpoints, files, cost)
 9. Merge to target branch
 10. Log `workflow_end` to audit-logger
+11. Calculate and report workflow cost (finops-cost-estimator MCP)
+
+**Multi-service mode:** When `SERVICE_NAME=all-services`, WF1 inspects and updates all services in the sandbox. Each service gets its own tests, coverage measurement, and doc artifacts.
 
 **Checkpoints (all must pass before merge):**
 
@@ -122,7 +130,7 @@ WF1 is the most comprehensive workflow. It maps directly to Kiro's spec-driven d
 | Test Coverage | ≥80% line coverage; all tests pass |
 | Security Scan | No HIGH or CRITICAL findings from security-scanner MCP |
 
-**MCP dependencies:** audit-logger, security-scanner, git-rollback
+**MCP dependencies:** audit-logger, security-scanner, git-rollback, finops-cost-estimator
 
 ---
 
@@ -156,7 +164,7 @@ WF2 refactors legacy code while guaranteeing behavioral equivalence. It never ch
 | Performance | No degradation beyond 10% threshold |
 | Security Scan | No new HIGH or CRITICAL vulnerabilities |
 
-**MCP dependencies:** audit-logger, security-scanner, git-rollback
+**MCP dependencies:** audit-logger, security-scanner, git-rollback, finops-cost-estimator
 
 ---
 
@@ -189,7 +197,7 @@ WF3 scans for outdated dependencies, checks compatibility, applies upgrades, and
 
 **Upgrade priority order:** security patches → minor/patch → major versions
 
-**MCP dependencies:** dependency-scanner, git-rollback, security-scanner, audit-logger
+**MCP dependencies:** dependency-scanner, git-rollback, security-scanner, audit-logger, finops-cost-estimator
 
 ---
 
@@ -223,7 +231,7 @@ WF4 performs structured root cause analysis before writing any code, then valida
 | Side-Effect Analysis | No new defects introduced |
 | Security Scan | No new HIGH or CRITICAL vulnerabilities |
 
-**MCP dependencies:** audit-logger, security-scanner, git-rollback
+**MCP dependencies:** audit-logger, security-scanner, git-rollback, finops-cost-estimator
 
 ---
 
@@ -252,7 +260,7 @@ WF5 analyzes an existing codebase and generates API docs, architecture diagrams,
 | Accuracy Validation | Docs match actual code; examples are valid; references resolve |
 | Completeness Review | All requested doc types fully covered |
 
-**MCP dependencies:** audit-logger
+**MCP dependencies:** audit-logger, finops-cost-estimator
 
 ---
 
@@ -266,8 +274,9 @@ All five workflows share the same MCP server infrastructure:
 | security-scanner | `scan_code`, `scan_dependencies`, `get_scan_report` | WF1, WF2, WF3, WF4 |
 | dependency-scanner | `scan_outdated`, `check_compatibility`, `get_upgrade_plan` | WF3 |
 | git-rollback | `create_restore_point`, `rollback`, `verify_consistency`, `list_restore_points` | WF1, WF2, WF3, WF4 |
+| finops-cost-estimator | `estimate_workflow_cost`, `calculate_workflow_cost`, `get_cost_report`, `get_historical_baseline` | All WFs |
 
-Every workflow logs a `workflow_end` event to audit-logger at completion, creating a tamper-evident SHA-256 hash chain across the full session.
+Every workflow logs a `workflow_end` event to audit-logger at completion, creating a tamper-evident SHA-256 hash chain across the full session. The finops-cost-estimator reads this event to compute post-run actuals and writes a cost report to `reports/finops/`.
 
 ---
 

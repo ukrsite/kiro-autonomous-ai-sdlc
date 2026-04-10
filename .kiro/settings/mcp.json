@@ -31,6 +31,28 @@
       },
       "disabled": false,
       "autoApprove": ["create_restore_point", "rollback", "verify_consistency", "list_restore_points"]
+    },
+    "finops-cost-estimator": {
+      "command": "docker",
+      "args": [
+        "run", "--init", "--rm", "-i",
+        "-e", "AUDIT_LOG_PATH",
+        "-e", "COST_MODEL_PATH",
+        "-e", "REPORTS_DIR",
+        "-e", "BASELINES_PATH",
+        "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/audit:/audit:ro",
+        "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/config:/config:ro",
+        "-v", "/home/zstakos/vscode/kiro-autonomous-ai-sdlc/reports:/reports",
+        "905418281081.dkr.ecr.us-east-1.amazonaws.com/genai-finops-cost-estimator-mcp-server:latest"
+      ],
+      "env": {
+        "AUDIT_LOG_PATH": "/audit/audit.ndjson",
+        "COST_MODEL_PATH": "/config/finops-cost-model.yml",
+        "REPORTS_DIR": "/reports/finops",
+        "BASELINES_PATH": "/reports/finops/baselines.json"
+      },
+      "disabled": false,
+      "autoApprove": ["estimate_workflow_cost", "calculate_workflow_cost", "get_cost_report", "get_historical_baseline"]
     }
   }
 }
