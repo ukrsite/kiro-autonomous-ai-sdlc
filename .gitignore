@@ -45,6 +45,7 @@ logs/
 
 # Large media files
 *.mp4
+!docs/demo/2026-04-10 17-19-03-compressed.mp4
 
 # Temporary files
 *.tmp
